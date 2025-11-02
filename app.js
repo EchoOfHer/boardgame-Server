@@ -7,6 +7,9 @@ app.use(express.urlencoded({ extended: true }));
 
 
 const con = require('./db');
+// ---------- image in server local storage ---------
+app.use('/image', express.static('images'));
+
 // ---------- authentication ---------
 
 
