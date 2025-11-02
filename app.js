@@ -143,6 +143,13 @@ app.get('/api/dashboard', authenticateToken, (req, res) => {
     });
 });
 
+// POST /api/logout - ออกจากระบบ
+app.post('/api/logout', (req, res) => {
+    res.status(200).json({ 
+        message: 'ออกจากระบบสำเร็จ',
+        info: 'Client ต้องลบ JWT Token ที่จัดเก็บไว้ด้วยตนเอง'
+    });
+});
 
 
 
