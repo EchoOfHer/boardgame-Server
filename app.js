@@ -207,13 +207,10 @@ app.get('/api/games', async (req, res) => {
   }
 });
 
-// ---------- health (ping) ----------
 
-
-// ---------- borrow-history ---------
+// ---------- borrow-history (CLEANED AND FIXED) ---------
 app.get('/borrow-history', async (req, res) => {
   console.log('[HIT] /borrow-history', req.query);
-
   try {
     // Validate borrower_id
     const borrowerId = parseInt(req.query.borrower_id, 10);
@@ -230,15 +227,17 @@ app.get('/borrow-history', async (req, res) => {
     const limitRaw = parseInt(req.query.limit || '100', 10);
     const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
 
-    // SQL Query 
+    // SQL Query - FIXED: Added 'Returning' mapping
     const sql = `
-      SELECT 
+      SELECT
         b.borrow_id AS id,
         g.game_name AS game,
-        CASE 
+        CASE
           WHEN b.status='approved'    THEN 'Approve'
           WHEN b.status='disapproved' THEN 'Disapprove'
-          WHEN b.status='returned'    THEN 'Approve'
+          WHEN b.status='returned'    THEN 'Returned'
+          WHEN b.status='cancelled'   THEN 'Cancelled'
+          WHEN b.status='returning'   THEN 'Returning' /* NEW: Added Returning status */
           ELSE 'Pending'
         END AS status,
         uL.username AS approvedBy,
@@ -258,7 +257,7 @@ app.get('/borrow-history', async (req, res) => {
           LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
           LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
           LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
-          LOWER(b.status)    LIKE CONCAT('%', LOWER(?), '%') OR
+          LOWER(b.status)   LIKE CONCAT('%', LOWER(?), '%') OR
           CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
         )
       ORDER BY b.from_date DESC
@@ -271,10 +270,10 @@ app.get('/borrow-history', async (req, res) => {
     params.push(q, q, q, q, q, q); // safe params
     params.push(limit);
 
-    //  Execute query 
+    // Execute query
     const [rows] = await con.query(sql, params);
 
-    // Empty result handling 
+    // Response
     return res.status(200).json({
       success: true,
       count: rows.length,
@@ -283,9 +282,7 @@ app.get('/borrow-history', async (req, res) => {
       q,
       status: statusFilter || undefined,
     });
-
   } catch (err) {
-    // Catch unexpected error 
     console.error('[borrow-history] error:', err);
     return res.status(500).json({
       success: false,
@@ -297,8 +294,105 @@ app.get('/borrow-history', async (req, res) => {
 
 
 
+// ... (Authentication, dashboard routes, borrow-history routes are omitted for brevity)
 
-// ---------- Check request ---------
+// ---------- Check request FIXED: Filter for Active Statuses Only ---------
+app.get('/api/check-request/:user_id', async (req, res) => {
+ const { user_id } = req.params;
+
+ try {
+ const sql = `
+ SELECT 
+ b.borrow_id,
+b.status AS borrow_status,
+b.from_date,
+ b.return_date,
+ g.game_name,
+ g.game_pic_path,
+ g.game_link_howto,
+ gi.status AS game_inventory_status
+ FROM borrow b
+JOIN game g ON b.game_id = g.game_id
+ JOIN game_inventory gi ON g.game_id = gi.game_id
+WHERE b.borrower_id = ?
+AND b.status IN ('pending', 'approved', 'returning')  /* 🔑 NEW: Filter active requests */
+ORDER BY b.borrow_id DESC;
+ `;
+
+ const [results] = await con.query(sql, [user_id]);
+
+ if (results.length === 0) {
+ return res.status(200).json({
+ message: 'ไม่พบคำขอยืมหรือประวัติการยืมของผู้ใช้นี้',
+ data: []
+ });
+ }
+
+ const formatted = results.map(item => ({
+ borrow_id: item.borrow_id,
+ game_name: item.game_name,
+ pic_path: item.game_pic_path,
+from_date: item.from_date,
+return_date: item.return_date,
+ borrow_status: item.borrow_status,
+game_inventory_status: item.game_inventory_status,
+ howto_link: item.game_link_howto
+ }));
+
+ res.status(200).json({
+ message: 'ดึงข้อมูลคำขอยืมสำเร็จ',
+data: formatted
+ });
+} catch (err) {
+console.error('❌ Error fetching check request:', err);
+res.status(500).json({
+message: 'เกิดข้อผิดพลาดในการดึงข้อมูลคำขอยืม',
+error: err.message
+ });
+ }
+});
+
+// ---------- Cancled borrowing ---------
+app.put('/api/borrow/status/:borrowId', async (req, res) => {
+    const { borrowId } = req.params;
+    const { status } = req.body; 
+
+    // 2. ตรวจสอบข้อมูล
+    if (!status || !['cancelled', 'returning'].includes(status.toLowerCase())) {
+        return res.status(400).json({ message: 'สถานะที่ส่งมาไม่ถูกต้อง (ต้องเป็น cancelled หรือ returning)' });
+    }
+    
+    // 3. เตรียมคำสั่ง SQL
+    try {
+        let updateStatus = status.toLowerCase();
+        
+        // 4. ทำการอัปเดต (Cleaned SQL String)
+        const sql = `
+            UPDATE borrow
+            SET status = ?
+            WHERE borrow_id = ?;
+        `;
+        
+        const [result] = await con.query(sql, [updateStatus, borrowId]);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'ไม่พบรายการยืมที่ต้องการอัปเดต' });
+        }
+
+        res.status(200).json({
+            message: `อัปเดตสถานะการยืม ${borrowId} เป็น ${updateStatus} สำเร็จ`,
+            borrow_id: borrowId,
+            new_status: updateStatus
+        });
+
+    } catch (err) {
+        console.error('❌ Error updating borrow status:', err);
+        res.status(500).json({
+            message: 'เกิดข้อผิดพลาดในการอัปเดตสถานะ',
+            error: err.message
+        });
+    }
+});
 
 
 // ---------- Request borrowing ---------
