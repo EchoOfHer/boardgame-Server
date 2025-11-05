@@ -396,7 +396,58 @@ app.put('/api/borrow/status/:borrowId', async (req, res) => {
 
 
 // ---------- Request borrowing ---------
+// POST /request-borrowing
+app.post('/request-borrowing', async (req, res) => {
+    // 🔑 NOTE: คาดหวัง student_id จาก Flutter Client
+    const { game_id, student_id, start_date, end_date } = req.body; 
+    const initialStatus = 'pending'; 
 
+    if (!game_id || !student_id || !start_date || !end_date) {
+        return res.status(400).json({ message: 'Missing required fields.' });
+    }
+
+    try {
+        // 1. Safety Check: Check if the user already has an active request (Enforce 1 active borrow rule)
+        // ตรวจสอบสถานะ: 'pending', 'approved', 'returning'
+        const [activeBorrows] = await con.query(
+            "SELECT borrow_id FROM borrow WHERE borrower_id = ? AND status IN ('pending', 'approved', 'returning')",
+            [student_id]
+        );
+
+        if (activeBorrows.length > 0) {
+            // ส่งสถานะ 409 Conflict หากผู้ใช้มีรายการแอคทีฟอยู่แล้ว
+            return res.status(409).json({ message: 'Borrow request failed: You already have an active request.' });
+        }
+
+        // 2. Insert new borrow record
+        const sql = `
+            INSERT INTO borrow (borrower_id, game_id, from_date, return_date, status)
+            VALUES (?, ?, ?, ?, ?);
+        `;
+
+        const [result] = await con.query(sql, [
+            student_id,
+            game_id,
+            start_date,
+            end_date,
+            initialStatus
+        ]);
+        
+        // 3. Send success response
+        res.status(200).json({
+            message: 'Borrow request successfully created and is pending approval.',
+            borrow_id: result.insertId,
+            status: initialStatus
+        });
+
+    } catch (err) {
+        console.error('❌ Error requesting borrowing:', err);
+        res.status(500).json({
+            message: 'เกิดข้อผิดพลาดในการสร้างคำขอยืม',
+            error: err.message
+        });
+    }
+});
 
 
 
