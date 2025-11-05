@@ -137,14 +137,6 @@ app.get('/api/dashboard', authenticateToken, (req, res) => {
     });
 });
 
-// GET /api/dashboard - ตัวอย่าง route ที่ต้องการการยืนยันตัวตน
-app.get('/api/dashboard', authenticateToken, (req, res) => {
-    res.json({
-        message: 'ยินดีต้อนรับสู่ Dashboard (เข้าถึงได้ด้วย Token เท่านั้น)',
-        user_info: req.user 
-    });
-});
-
 // POST /api/logout - ออกจากระบบ
 app.post('/api/logout', (req, res) => {
     res.status(200).json({ 
@@ -211,6 +203,7 @@ app.get('/api/games', async (req, res) => {
 // ---------- borrow-history (CLEANED AND FIXED) ---------
 app.get('/borrow-history', async (req, res) => {
   console.log('[HIT] /borrow-history', req.query);
+
   try {
     // Validate borrower_id
     const borrowerId = parseInt(req.query.borrower_id, 10);
@@ -227,7 +220,7 @@ app.get('/borrow-history', async (req, res) => {
     const limitRaw = parseInt(req.query.limit || '100', 10);
     const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
 
-    // SQL Query - FIXED: Added 'Returning' mapping
+    // SQL Query - Reverted to only use DATE for display and sorting (no raw time field)
     const sql = `
       SELECT
         b.borrow_id AS id,
@@ -237,12 +230,12 @@ app.get('/borrow-history', async (req, res) => {
           WHEN b.status='disapproved' THEN 'Disapprove'
           WHEN b.status='returned'    THEN 'Returned'
           WHEN b.status='cancelled'   THEN 'Cancelled'
-          WHEN b.status='returning'   THEN 'Returning' /* NEW: Added Returning status */
+          WHEN b.status='returning'   THEN 'Returning'
           ELSE 'Pending'
         END AS status,
         uL.username AS approvedBy,
         uS.username AS returnedTo,
-        DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
+        DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate, /* ✅ ส่งแค่ วัน/เดือน/ปี */
         DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
         b.reason AS reason
       FROM borrow b
@@ -251,26 +244,27 @@ app.get('/borrow-history', async (req, res) => {
       LEFT JOIN users uL ON uL.user_id = b.lender_id
       LEFT JOIN users uS ON uS.user_id = b.staff_id
       WHERE b.borrower_id = ?
+        AND b.status IN ('approved', 'disapproved', 'returned', 'cancelled','returning')
         ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
         AND (
           ? = '' OR
           LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
           LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
           LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
-          LOWER(b.status)   LIKE CONCAT('%', LOWER(?), '%') OR
+          LOWER(b.status)    LIKE CONCAT('%', LOWER(?), '%') OR
           CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
         )
-      ORDER BY b.from_date DESC
+      ORDER BY b.from_date DESC /* เรียงตามวันที่ (และถ้าเป็น DATETIME ก็จะเรียงตามเวลาด้วย แต่ Frontend จะไม่ใช้) */
       LIMIT ?
     `;
 
-    // Parameters for query
+    // Build params
     const params = [borrowerId];
     if (statusFilter) params.push(statusFilter);
-    params.push(q, q, q, q, q, q); // safe params
+    params.push(q, q, q, q, q, q);
     params.push(limit);
 
-    // Execute query
+    // Execute
     const [rows] = await con.query(sql, params);
 
     // Response
@@ -291,10 +285,6 @@ app.get('/borrow-history', async (req, res) => {
     });
   }
 });
-
-
-
-// ... (Authentication, dashboard routes, borrow-history routes are omitted for brevity)
 
 // ---------- Check request FIXED: Filter for Active Statuses Only ---------
 app.get('/api/check-request/:user_id', async (req, res) => {
