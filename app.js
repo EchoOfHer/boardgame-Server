@@ -64,25 +64,21 @@ app.post('/api/login', async (req, res) => {
     }
 
     try {
-        // 1. ค้นหาผู้ใช้ด้วย Username ในฐานข้อมูล
-        // ใช้ username ที่ผู้ใช้ส่งมาในการค้นหา
+        // 1. ค้นหาผู้ใช้ด้วย Username
         const [users] = await con.query(
             'SELECT user_id, username, password_hash, role FROM users WHERE username = ?', 
             [username]
         );
 
         if (users.length === 0) {
-            // ไม่พบผู้ใช้
             return res.status(401).json({ message: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
         }
 
         const user = users[0];
 
-        // 2. เปรียบเทียบรหัสผ่านที่กรอกมากับ Hash ในฐานข้อมูล
+        // 2. ตรวจสอบรหัสผ่าน
         const isMatch = await bcrypt.compare(password, user.password_hash);
-
         if (!isMatch) {
-            // รหัสผ่านไม่ตรงกัน
             return res.status(401).json({ message: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
         }
 
@@ -94,15 +90,23 @@ app.post('/api/login', async (req, res) => {
         };
 
         // 4. สร้าง Token
-        const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' }); // Token หมดอายุใน 1 ชั่วโมง
+        const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
 
-        // 5. ส่ง Token และข้อมูลผู้ใช้กลับไปยัง Client
+        // 5. ส่ง Token และข้อมูลผู้ใช้กลับ พร้อมแนะนำหน้า landing ตาม role
+        let landingPage = 'student.main';
+        if (user.role === 'lender') {
+            landingPage = 'lender.main';
+        } else if (user.role === 'staff') {
+            landingPage = 'staff.main';
+        }
+
         res.json({ 
             message: 'เข้าสู่ระบบสำเร็จ',
-            token: token,
+            token,
             user_id: user.user_id,
             username: user.username,
-            role: user.role
+            role: user.role,
+            landingPage //  บอก client ว่าต้องไปหน้าไหน
         });
 
     } catch (error) {
@@ -110,6 +114,7 @@ app.post('/api/login', async (req, res) => {
         res.status(500).json({ message: 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ', error: error.message });
     }
 });
+
 
 // Middleware สำหรับตรวจสอบ JWT
 const authenticateToken = (req, res, next) => {
@@ -442,6 +447,117 @@ app.post('/request-borrowing', async (req, res) => {
         });
     }
 });
+
+
+// approve borrowing request ของ lender
+
+app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) => {
+    const { borrowId } = req.params;
+    const { status, lender_id } = req.body;
+
+    // ตรวจสอบสถานะที่อนุญาตให้เปลี่ยน
+    const allowedStatuses = ['approved', 'disapproved'];
+    if (!status || !allowedStatuses.includes(status.toLowerCase())) {
+        return res.status(400).json({ 
+            message: 'สถานะที่ส่งมาไม่ถูกต้อง (ต้องเป็น approved หรือ disapproved)' 
+        });
+    }
+
+    // ตรวจสอบ lender_id
+    if (!lender_id || isNaN(parseInt(lender_id))) {
+        return res.status(400).json({ 
+            message: 'lender_id หรือ staff_id จำเป็นต้องระบุ' 
+        });
+    }
+
+    // กำหนดว่าใครเป็นคนอนุมัติ (ใช้ lender_id หรือ staff_id ตาม role ของผู้ใช้งานจริง)
+    const approverId = parseInt(lender_id, 10);
+    const updateField = req.user.role === 'lender' ? 'lender_id' : 'staff_id'; 
+    const updateStatus = status.toLowerCase();
+    let inventoryIdToUpdate = null;
+
+    try {
+        // 1. ตรวจสอบสถานะปัจจุบันและดึง game_id
+        const [currentBorrowInfo] = await con.query(
+            'SELECT game_id, status FROM borrow WHERE borrow_id = ?', 
+            [borrowId]
+        );
+
+        if (currentBorrowInfo.length === 0 || currentBorrowInfo[0].status !== 'pending') {
+            return res.status(404).json({ 
+                message: 'ไม่พบรายการยืมที่ต้องการอนุมัติ หรือสถานะไม่เป็น "pending"' 
+            });
+        }
+
+        const gameId = currentBorrowInfo[0].game_id;
+
+        // 2. ตรรกะการอนุมัติ (approved)
+        if (updateStatus === 'approved') {
+            // 2.1 หา inventory_id ที่มีสถานะ 'Available' สำหรับ game_id นั้น
+            const [availableInventory] = await con.query(
+                "SELECT inventory_id FROM game_inventory WHERE game_id = ? AND status = 'Available' LIMIT 1",
+                [gameId]
+            );
+
+            if (availableInventory.length === 0) {
+                return res.status(409).json({ 
+                    message: 'ไม่สามารถอนุมัติได้: ไม่มีสินค้าให้ยืมในสถานะ "Available"',
+                    borrow_id: borrowId
+                });
+            }
+
+            inventoryIdToUpdate = availableInventory[0].inventory_id;
+
+            // 2.2 อัปเดตสถานะของ copy เป็น 'Borrowing'
+            const sqlInventory = `
+                UPDATE game_inventory
+                SET status = 'Borrowing'
+                WHERE inventory_id = ?;
+            `;
+            await con.query(sqlInventory, [inventoryIdToUpdate]);
+
+            // 2.3 อัปเดตตาราง borrow: กำหนด status, ผู้ดำเนินการ, และผูก inventory_id
+            const sqlBorrow = `
+                UPDATE borrow
+                SET status = ?, ${updateField} = ?, inventory_id = ?
+                WHERE borrow_id = ? AND status = 'pending';
+            `;
+            await con.query(sqlBorrow, [updateStatus, approverId, inventoryIdToUpdate, borrowId]);
+
+        } else {
+            // 3. ตรรกะการไม่อนุมัติ (disapproved)
+            const sqlBorrow = `
+                UPDATE borrow
+                SET status = ?, ${updateField} = ?
+                WHERE borrow_id = ? AND status = 'pending';
+            `;
+
+            const [resultBorrow] = await con.query(sqlBorrow, [updateStatus, approverId, borrowId]);
+
+            if (resultBorrow.affectedRows === 0) {
+                return res.status(404).json({ 
+                    message: 'ไม่พบรายการยืมที่ต้องการอัปเดต หรือสถานะไม่เป็น "pending"',
+                    hint: 'อาจมีการอนุมัติหรือยกเลิกรายการนี้ไปแล้ว'
+                });
+            }
+        }
+
+        res.status(200).json({
+            message: `อัปเดตสถานะการยืม ${borrowId} เป็น ${updateStatus} สำเร็จ`,
+            borrow_id: borrowId,
+            new_status: updateStatus,
+            inventory_id_used: inventoryIdToUpdate
+        });
+
+    } catch (err) {
+        console.error('❌ Error updating borrow approval status:', err);
+        res.status(500).json({
+            message: 'เกิดข้อผิดพลาดในการอัปเดตสถานะการอนุมัติ',
+            error: err.message
+        });
+    }
+});
+
 
 
 
