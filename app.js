@@ -57,90 +57,116 @@ app.post('/api/register', async (req, res) => {
 
 // POST /api/login - เข้าสู่ระบบและรับ JWT Token
 app.post('/api/login', async (req, res) => {
-    const { username, password } = req.body;
+  const { username, password } = req.body;
 
-    if (!username || !password) {
-        return res.status(400).json({ message: 'โปรดระบุ Username และ Password' });
+  if (!username || !password) {
+    return res.status(400).json({ message: 'โปรดระบุ Username และ Password' });
+  }
+
+  try {
+    const [users] = await con.query(
+      'SELECT user_id, username, password_hash, role FROM users WHERE username = ?', 
+      [username]
+    );
+
+    if (users.length === 0) {
+      return res.status(401).json({ message: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
     }
 
-    try {
-        // 1. ค้นหาผู้ใช้ด้วย Username
-        const [users] = await con.query(
-            'SELECT user_id, username, password_hash, role FROM users WHERE username = ?', 
-            [username]
-        );
+    const user = users[0];
 
-        if (users.length === 0) {
-            return res.status(401).json({ message: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
-        }
-
-        const user = users[0];
-
-        // 2. ตรวจสอบรหัสผ่าน
-        const isMatch = await bcrypt.compare(password, user.password_hash);
-        if (!isMatch) {
-            return res.status(401).json({ message: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
-        }
-
-        // 3. สร้าง JWT Payload
-        const payload = {
-            user_id: user.user_id,
-            username: user.username,
-            role: user.role
-        };
-
-        // 4. สร้าง Token
-        const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
-
-        // 5. ส่ง Token และข้อมูลผู้ใช้กลับ พร้อมแนะนำหน้า landing ตาม role
-        let landingPage = 'student.main';
-        if (user.role === 'lender') {
-            landingPage = 'lender.main';
-        } else if (user.role === 'staff') {
-            landingPage = 'staff.main';
-        }
-
-        res.json({ 
-            message: 'เข้าสู่ระบบสำเร็จ',
-            token,
-            user_id: user.user_id,
-            username: user.username,
-            role: user.role,
-            landingPage //  บอก client ว่าต้องไปหน้าไหน
-        });
-
-    } catch (error) {
-        console.error('Login Error:', error);
-        res.status(500).json({ message: 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ', error: error.message });
+    const isMatch = await bcrypt.compare(password, user.password_hash);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
     }
+
+    const payload = {
+      user_id: user.user_id,
+      username: user.username,
+      role: user.role
+    };
+
+    console.log('JWT Payload:', payload); // เพิ่ม log เพื่อตรวจสอบ payload
+
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
+
+    let landingPage = 'student.main';
+    if (user.role === 'lender') {
+      landingPage = 'lender.main';
+    } else if (user.role === 'staff') {
+      landingPage = 'staff.main';
+    }
+
+    res.json({ 
+      message: 'เข้าสู่ระบบสำเร็จ',
+      token,
+      user_id: user.user_id,
+      username: user.username,
+      role: user.role,
+      landingPage
+    });
+  } catch (error) {
+    console.error('Login Error:', error);
+    res.status(500).json({ message: 'เกิดข้อผิดพลาดในการเข้าสู่ระบบ', error: error.message });
+  }
 });
 
 
 // Middleware สำหรับตรวจสอบ JWT
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-
-    if (token == null) {
-        return res.status(403).json({ message: 'ไม่พบ Token: กรุณาเข้าสู่ระบบ' });
-    }
+    const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+    if (!token) return res.status(401).json({ message: 'Token ไม่ถูกต้องหรือหมดอายุ' });
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-            return res.status(401).json({ message: 'Token ไม่ถูกต้องหรือหมดอายุ' });
-        }
-        req.user = user; 
-        next(); 
+        if (err) return res.status(403).json({ message: 'Token ไม่ถูกต้อง' });
+        req.user = user; // user_id, username, role
+        next();
     });
 };
 
-// GET /api/dashboard - ตัวอย่าง route ที่ต้องการการยืนยันตัวตน
+// Middleware ตรวจสอบ role
+const authorizeRole = (roles) => {
+    return (req, res, next) => {
+        if (!roles.includes(req.user.role)) {
+            return res.status(403).json({ message: 'คุณไม่มีสิทธิ์เข้าถึงข้อมูลนี้' });
+        }
+        next();
+    };
+};
+
+// Dashboard สำหรับทุก role
 app.get('/api/dashboard', authenticateToken, (req, res) => {
     res.json({
-        message: 'ยินดีต้อนรับสู่ Dashboard (เข้าถึงได้ด้วย Token เท่านั้น)',
-        user_info: req.user 
+        message: `ยินดีต้อนรับสู่ Dashboard ของ ${req.user.role}`,
+        user_info: req.user
     });
 });
+
+// Dashboard สำหรับ Student / Borrower เท่านั้น
+app.get('/api/student/dashboard', authenticateToken, authorizeRole(['borrower']), (req, res) => {
+    res.json({
+        message: 'ยินดีต้อนรับสู่ Student Dashboard',
+        student_info: req.user
+    });
+});
+
+// Dashboard สำหรับ Lender เท่านั้น
+app.get('/api/lender/dashboard', authenticateToken, authorizeRole(['lender']), (req, res) => {
+    res.json({
+        message: 'ยินดีต้อนรับสู่ Lender Dashboard',
+        lender_info: req.user
+    });
+});
+
+// Dashboard สำหรับ Staff เท่านั้น
+app.get('/api/staff/dashboard', authenticateToken, authorizeRole(['staff']), (req, res) => {
+    res.json({
+        message: 'ยินดีต้อนรับสู่ Staff Dashboard',
+        staff_info: req.user
+    });
+});
+
 
 // POST /api/logout - ออกจากระบบ
 app.post('/api/logout', (req, res) => {
@@ -557,6 +583,64 @@ app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) =
         });
     }
 });
+
+// ---------- Lender: View pending borrow requests ----------
+app.get('/api/lender/requests',
+  authenticateToken,
+  authorizeRole(['lender']),
+  async (req, res) => {
+    try {
+      // 1. ดึง user_id ของผู้ใช้งานที่ล็อกอิน (Lender) จาก Token
+      const lenderId = req.user.user_id;
+
+      // 2. Query ดึงคำขอที่รออนุมัติของ Lender คนนี้
+      const sql = `
+        SELECT 
+          b.borrow_id,
+          b.borrower_id,
+          u.username AS borrower_username,
+          b.game_id,
+          g.game_name,
+          b.from_date,
+          b.return_date,
+          b.status,
+          b.reason
+        FROM borrow b
+        JOIN users u ON b.borrower_id = u.user_id
+        JOIN game g ON b.game_id = g.game_id
+        WHERE b.status = 'pending'
+          AND b.lender_id = ?   -- กรองตาม lender_id ของผู้ใช้งาน
+        ORDER BY b.from_date ASC;
+      `;
+
+      const [rows] = await con.query(sql, [lenderId]);
+
+      // 3. กรณีไม่มีคำขอ pending
+      if (!rows || rows.length === 0) {
+        return res.status(200).json({
+          success: true,
+          count: 0,
+          message: 'ไม่มีคำขอยืมที่รออนุมัติในขณะนี้',
+          requests: [],
+        });
+      }
+
+      // 4. ส่งผลลัพธ์กลับ
+      res.status(200).json({
+        success: true,
+        count: rows.length,
+        requests: rows,
+      });
+    } catch (err) {
+      console.error('❌ Error fetching lender requests:', err);
+      res.status(500).json({
+        success: false,
+        message: 'เกิดข้อผิดพลาดในการดึงรายการคำขอยืมที่รออนุมัติ',
+        error: err.message,
+      });
+    }
+  }
+);
 
 
 
