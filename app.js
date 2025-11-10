@@ -642,30 +642,31 @@ app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) =
 //   }
 // );
 
-app.get('/lender/pending/:lenderId', async (req, res) => {
-  const lenderId = req.params.lenderId;
+
+app.get('/lender/pending', async (req, res) => {
   const sql = `
     SELECT 
-      b.borrow_id AS id,
-      g.game_name,
-      u.username AS borrower_name,
-      b.from_date,
+      b.borrow_id AS id, 
+      g.game_name, 
+      u.username AS borrower_name, 
+      b.from_date, 
       b.return_date
     FROM borrow b
-    JOIN game g ON b.game_id = g.game_id
-    JOIN users u ON b.borrower_id = u.user_id
-    WHERE b.lender_id = ? AND b.status = 'pending'
+    LEFT JOIN game g ON b.game_id = g.game_id
+    LEFT JOIN users u ON b.borrower_id = u.user_id
+    WHERE b.status = 'pending'
     ORDER BY b.from_date ASC
   `;
 
   try {
-    const [rows] = await con.query(sql, [lenderId]);
+    const [rows] = await con.query(sql);
     res.json(rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
+
 
 
 app.post('/lender/approve/:id', async (req, res) => {
