@@ -647,7 +647,8 @@ app.get('/lender/pending', async (req, res) => {
   const sql = `
     SELECT 
       b.borrow_id AS id, 
-      g.game_name, 
+      g.game_name,
+      g.game_pic_path, 
       u.username AS borrower_name, 
       b.from_date, 
       b.return_date
