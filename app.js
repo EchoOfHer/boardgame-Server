@@ -642,6 +642,86 @@ app.get('/api/lender/requests',
   }
 );
 
+// --- Lender History API ---
+app.get('/HistoryLenderPage', async (req, res) => {
+  console.log('[HIT] /HistoryLenderPage', req.query);
+
+  try {
+    const lenderId = parseInt(req.query.lender_id, 10);
+    if (!Number.isInteger(lenderId) || lenderId <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'lender_id is required and must be a positive integer',
+      });
+    }
+
+    const q = String(req.query.q || '').trim();
+    const statusFilter = String(req.query.status || '').trim().toLowerCase();
+    const limitRaw = parseInt(req.query.limit || '100', 10);
+    const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
+
+    const sql = `
+      SELECT
+        b.borrow_id AS id,
+        g.game_name AS game,
+        CASE
+          WHEN b.status='approved'    THEN 'Approve'
+          WHEN b.status='disapproved' THEN 'Disapprove'
+          WHEN b.status='returned'   THEN 'Returned'
+          WHEN b.status='cancelled'  THEN 'Cancelled'
+          WHEN b.status='returning'  THEN 'Returning'
+          ELSE 'Pending'
+        END AS status,
+        uL.username AS borrowedBy,
+        uS.username AS returnedTo,
+        DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
+        DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
+        b.reason AS reason
+      FROM borrow b
+      JOIN game g ON g.game_id = b.game_id
+      LEFT JOIN users uL ON uL.user_id = b.borrower_id
+      LEFT JOIN users uS ON uS.user_id = b.staff_id
+      WHERE b.lender_id = ?
+        AND b.status IN ('approved', 'disapproved', 'returned', 'cancelled','returning')
+        ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
+        AND (
+          ? = '' OR
+          LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
+          LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
+          LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
+          LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
+          CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
+        )
+      ORDER BY b.from_date DESC
+      LIMIT ?
+    `;
+
+    const params = [lenderId];
+    if (statusFilter) params.push(statusFilter);
+    params.push(q, q, q, q, q, q);
+    params.push(limit);
+
+    const [rows] = await con.execute(sql, params);
+
+    res.json({
+      success: true,
+      count: rows.length,
+      items: rows,
+      lender_id: lenderId,
+      q,
+      status: statusFilter || undefined,
+    });
+  } catch (err) {
+    console.error('[HistoryLenderPage] error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+
 
 
 
