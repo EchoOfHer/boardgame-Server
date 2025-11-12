@@ -475,120 +475,76 @@ app.post('/request-borrowing', async (req, res) => {
 
 // approve borrowing request ของ lender
 
-// approve borrowing request ของ lender
-
 app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) => {
     const { borrowId } = req.params;
-    // 💡 แก้ไข: เพิ่ม reason เข้ามาในการ destructure จาก req.body
-    const { status, lender_id, reason } = req.body; 
+    const { status, lender_id, reason } = req.body;
 
-    // ตรวจสอบสถานะที่อนุญาตให้เปลี่ยน
     const allowedStatuses = ['approved', 'disapproved'];
     if (!status || !allowedStatuses.includes(status.toLowerCase())) {
-        return res.status(400).json({ 
-            message: 'สถานะที่ส่งมาไม่ถูกต้อง (ต้องเป็น approved หรือ disapproved)' 
-        });
+        return res.status(400).json({ message: 'สถานะต้องเป็น approved หรือ disapproved' });
     }
 
-    // ตรวจสอบ lender_id
     if (!lender_id || isNaN(parseInt(lender_id))) {
-        return res.status(400).json({ 
-            message: 'lender_id หรือ staff_id จำเป็นต้องระบุ' 
-        });
+        return res.status(400).json({ message: 'lender_id จำเป็น' });
     }
 
-    // กำหนดว่าใครเป็นคนอนุมัติ (ใช้ lender_id หรือ staff_id ตาม role ของผู้ใช้งานจริง)
-    const approverId = parseInt(lender_id, 10);
-    const updateField = req.user.role === 'lender' ? 'lender_id' : 'staff_id'; 
     const updateStatus = status.toLowerCase();
-    let inventoryIdToUpdate = null;
+    const approverId = parseInt(lender_id, 10);
+    const updateField = req.user.role === 'lender' ? 'lender_id' : 'staff_id';
+
+    // ตรวจสอบ reason สำหรับ disapproved
+    if (updateStatus === 'disapproved' && (!reason || reason.trim() === '')) {
+        return res.status(400).json({ message: 'ต้องระบุเหตุผลสำหรับการไม่อนุมัติ' });
+    }
 
     try {
-        // 1. ตรวจสอบสถานะปัจจุบันและดึง game_id
-        const [currentBorrowInfo] = await con.query(
-            'SELECT game_id, status FROM borrow WHERE borrow_id = ?', 
+        // 1. ตรวจสอบว่ายังเป็น pending อยู่
+        const [borrowInfo] = await con.query(
+            'SELECT status FROM borrow WHERE borrow_id = ?',
             [borrowId]
         );
 
-        if (currentBorrowInfo.length === 0 || currentBorrowInfo[0].status !== 'pending') {
-            return res.status(404).json({ 
-                message: 'ไม่พบรายการยืมที่ต้องการอนุมัติ หรือสถานะไม่เป็น "pending"' 
-            });
+        if (borrowInfo.length === 0 || borrowInfo[0].status !== 'pending') {
+            return res.status(404).json({ message: 'ไม่พบคำขอหรือสถานะไม่ใช่ pending' });
         }
 
-        const gameId = currentBorrowInfo[0].game_id;
+        // 2. อัปเดตเฉพาะใน borrow โดยใช้ borrow_id
+        let sql, params;
 
-        // 2. ตรรกะการอนุมัติ (approved)
         if (updateStatus === 'approved') {
-            // ... (โค้ดส่วน approved ไม่มีการเปลี่ยนแปลง) ...
-            
-            // 2.1 หา inventory_id ที่มีสถานะ 'Available' สำหรับ game_id นั้น
-            const [availableInventory] = await con.query(
-                "SELECT inventory_id FROM game_inventory WHERE game_id = ? AND status = 'Available' LIMIT 1",
-                [gameId]
-            );
-
-            if (availableInventory.length === 0) {
-                return res.status(409).json({ 
-                    message: 'ไม่สามารถอนุมัติได้: ไม่มีสินค้าให้ยืมในสถานะ "Available"',
-                    borrow_id: borrowId
-                });
-            }
-
-            inventoryIdToUpdate = availableInventory[0].inventory_id;
-
-            // 2.2 อัปเดตสถานะของ copy เป็น 'Borrowing'
-            const sqlInventory = `
-                UPDATE game_inventory
-                SET status = 'Borrowing'
-                WHERE inventory_id = ?;
+            sql = `
+                UPDATE borrow 
+                SET status = ?, ${updateField} = ?
+                WHERE borrow_id = ? AND status = 'pending'
             `;
-            await con.query(sqlInventory, [inventoryIdToUpdate]);
-
-            // 2.3 อัปเดตตาราง borrow: กำหนด status, ผู้ดำเนินการ, และผูก inventory_id
-            const sqlBorrow = `
-                UPDATE borrow
-                SET status = ?, ${updateField} = ?, inventory_id = ?
-                WHERE borrow_id = ? AND status = 'pending';
-            `;
-            await con.query(sqlBorrow, [updateStatus, approverId, inventoryIdToUpdate, borrowId]);
-
+            params = [updateStatus, approverId, borrowId];
         } else {
-            // 3. ตรรกะการไม่อนุมัติ (disapproved)
-            // 💡 แก้ไข: เพิ่ม reason=? ใน SET
-            const sqlBorrow = `
-                UPDATE borrow
-                SET status = ?, ${updateField} = ?, reason = ? 
-                WHERE borrow_id = ? AND status = 'pending';
+            sql = `
+                UPDATE borrow 
+                SET status = ?, ${updateField} = ?, reason = ?
+                WHERE borrow_id = ? AND status = 'pending'
             `;
-
-            // 💡 แก้ไข: เพิ่ม reason เข้าไปใน parameters
-            const [resultBorrow] = await con.query(sqlBorrow, [updateStatus, approverId, reason, borrowId]);
-
-            if (resultBorrow.affectedRows === 0) {
-                return res.status(404).json({ 
-                    message: 'ไม่พบรายการยืมที่ต้องการอัปเดต หรือสถานะไม่เป็น "pending"',
-                    hint: 'อาจมีการอนุมัติหรือยกเลิกรายการนี้ไปแล้ว'
-                });
-            }
+            params = [updateStatus, approverId, reason, borrowId];
         }
 
+        const [result] = await con.query(sql, params);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'อัปเดตไม่สำเร็จ: สถานะอาจเปลี่ยนไปแล้ว' });
+        }
+
+        // สำเร็จ!
         res.status(200).json({
-            message: `อัปเดตสถานะการยืม ${borrowId} เป็น ${updateStatus} สำเร็จ`,
+            message: `สถานะอัปเดตเป็น ${updateStatus} สำเร็จ`,
             borrow_id: borrowId,
-            new_status: updateStatus,
-            inventory_id_used: inventoryIdToUpdate
+            new_status: updateStatus
         });
 
     } catch (err) {
-        console.error('❌ Error updating borrow approval status:', err);
-        res.status(500).json({
-            message: 'เกิดข้อผิดพลาดในการอัปเดตสถานะการอนุมัติ',
-            error: err.message
-        });
+        console.error('Error in approval:', err);
+        res.status(500).json({ message: 'เซิร์ฟเวอร์ error', error: err.message });
     }
 });
-
 
 
 app.get('/lender/pending', async (req, res) => {
