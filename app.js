@@ -200,8 +200,6 @@ app.get('/api/games', async (req, res) => {
             JOIN game g ON gi.game_id = g.game_id
             LEFT JOIN game_style gs 
                 ON g.style_id = gs.style_id
-            WHERE 
-                gi.status != 'Disabled' -- Filter out physical copies that are out of service
             ORDER BY 
                 g.game_name, gi.inventory_id;
         `;
@@ -477,9 +475,12 @@ app.post('/request-borrowing', async (req, res) => {
 
 // approve borrowing request ของ lender
 
+// approve borrowing request ของ lender
+
 app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) => {
     const { borrowId } = req.params;
-    const { status, lender_id } = req.body;
+    // 💡 แก้ไข: เพิ่ม reason เข้ามาในการ destructure จาก req.body
+    const { status, lender_id, reason } = req.body; 
 
     // ตรวจสอบสถานะที่อนุญาตให้เปลี่ยน
     const allowedStatuses = ['approved', 'disapproved'];
@@ -519,6 +520,8 @@ app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) =
 
         // 2. ตรรกะการอนุมัติ (approved)
         if (updateStatus === 'approved') {
+            // ... (โค้ดส่วน approved ไม่มีการเปลี่ยนแปลง) ...
+            
             // 2.1 หา inventory_id ที่มีสถานะ 'Available' สำหรับ game_id นั้น
             const [availableInventory] = await con.query(
                 "SELECT inventory_id FROM game_inventory WHERE game_id = ? AND status = 'Available' LIMIT 1",
@@ -552,13 +555,15 @@ app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) =
 
         } else {
             // 3. ตรรกะการไม่อนุมัติ (disapproved)
+            // 💡 แก้ไข: เพิ่ม reason=? ใน SET
             const sqlBorrow = `
                 UPDATE borrow
-                SET status = ?, ${updateField} = ?
+                SET status = ?, ${updateField} = ?, reason = ? 
                 WHERE borrow_id = ? AND status = 'pending';
             `;
 
-            const [resultBorrow] = await con.query(sqlBorrow, [updateStatus, approverId, borrowId]);
+            // 💡 แก้ไข: เพิ่ม reason เข้าไปใน parameters
+            const [resultBorrow] = await con.query(sqlBorrow, [updateStatus, approverId, reason, borrowId]);
 
             if (resultBorrow.affectedRows === 0) {
                 return res.status(404).json({ 
@@ -584,63 +589,6 @@ app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) =
     }
 });
 
-// ---------- Lender: View pending borrow requests ----------
-// app.get('/api/lender/requests',
-//   authenticateToken,
-//   authorizeRole(['lender']),
-//   async (req, res) => {
-//     try {
-//       // 1. ดึง user_id ของผู้ใช้งานที่ล็อกอิน (Lender) จาก Token
-//       const lenderId = req.user.user_id;
-
-//       // 2. Query ดึงคำขอที่รออนุมัติของ Lender คนนี้
-//       const sql = `
-//         SELECT 
-//           b.borrow_id,
-//           b.borrower_id,
-//           u.username AS borrower_username,
-//           b.game_id,
-//           g.game_name,
-//           b.from_date,
-//           b.return_date,
-//           b.status,
-//           b.reason
-//         FROM borrow b
-//         JOIN users u ON b.borrower_id = u.user_id
-//         JOIN game g ON b.game_id = g.game_id
-//         WHERE b.status = 'pending'
-//           AND b.lender_id = ?   -- กรองตาม lender_id ของผู้ใช้งาน
-//         ORDER BY b.from_date ASC;
-//       `;
-
-//       const [rows] = await con.query(sql, [lenderId]);
-
-//       // 3. กรณีไม่มีคำขอ pending
-//       if (!rows || rows.length === 0) {
-//         return res.status(200).json({
-//           success: true,
-//           count: 0,
-//           message: 'ไม่มีคำขอยืมที่รออนุมัติในขณะนี้',
-//           requests: [],
-//         });
-//       }
-
-//       // 4. ส่งผลลัพธ์กลับ
-//       res.status(200).json({
-//         success: true,
-//         count: rows.length,
-//         requests: rows,
-//       });
-//     } catch (err) {
-//       console.error('❌ Error fetching lender requests:', err);
-//       res.status(500).json({
-//         success: false,
-//         message: 'เกิดข้อผิดพลาดในการดึงรายการคำขอยืมที่รออนุมัติ',
-//         error: err.message,
-//       });
-//     }
-//   }
-// );
 
 
 app.get('/lender/pending', async (req, res) => {
@@ -691,6 +639,7 @@ app.post('/lender/disapprove/:id', async (req, res) => {
   }
 });
 
+
 // --- Lender History API ---
 app.get('/HistoryLenderPage', async (req, res) => {
   console.log('[HIT] /HistoryLenderPage', req.query);
@@ -716,9 +665,9 @@ app.get('/HistoryLenderPage', async (req, res) => {
         CASE
           WHEN b.status='approved'    THEN 'Approve'
           WHEN b.status='disapproved' THEN 'Disapprove'
-          WHEN b.status='returned'   THEN 'Returned'
-          WHEN b.status='cancelled'  THEN 'Cancelled'
-          WHEN b.status='returning'  THEN 'Returning'
+          WHEN b.status='returned'    THEN 'Returned'
+          WHEN b.status='cancelled'   THEN 'Cancelled'
+          WHEN b.status='returning'   THEN 'Returning'
           ELSE 'Pending'
         END AS status,
         uL.username AS borrowedBy,
@@ -731,7 +680,7 @@ app.get('/HistoryLenderPage', async (req, res) => {
       LEFT JOIN users uL ON uL.user_id = b.borrower_id
       LEFT JOIN users uS ON uS.user_id = b.staff_id
       WHERE b.lender_id = ?
-        AND b.status IN ('approved', 'disapproved', 'returned', 'cancelled','returning')
+        AND b.status IN ('approved', 'disapproved', 'returned', 'cancelled', 'returning')
         ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
         AND (
           ? = '' OR
@@ -750,7 +699,8 @@ app.get('/HistoryLenderPage', async (req, res) => {
     params.push(q, q, q, q, q, q);
     params.push(limit);
 
-    const [rows] = await con.execute(sql, params);
+    // Using con.query (correct for mysql2/promise)
+    const [rows] = await con.query(sql, params);
 
     res.json({
       success: true,
@@ -768,7 +718,7 @@ app.get('/HistoryLenderPage', async (req, res) => {
       error: err instanceof Error ? err.message : String(err),
     });
   }
-);
+});
 // ---------- Lender status summary ---------
 app.get('/api/status-summary', authenticateToken, async (req, res) => {
   try {
