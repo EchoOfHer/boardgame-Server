@@ -768,9 +768,50 @@ app.get('/HistoryLenderPage', async (req, res) => {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+);
+// ---------- Lender status summary ---------
+app.get('/api/status-summary', authenticateToken, async (req, res) => {
+  try {
+    // ดึง user จาก token
+    const user = req.user;
+    const userRole = user.role;
+    const lenderId = user.user_id;
+
+    // Logic ใหม่: ทุก Role (lender, staff, borrower)
+    // จะเห็นสรุปสถานะรวมของเกมทั้งหมดใน game_inventory
+    let sql = `
+        SELECT
+          SUM(CASE WHEN status = 'Borrowing' THEN 1 ELSE 0 END) AS borrowed,
+          SUM(CASE WHEN status = 'Available' THEN 1 ELSE 0 END) AS available,
+          SUM(CASE WHEN status = 'Disabled' THEN 1 ELSE 0 END) AS disabled
+        FROM game_inventory;
+    `;
+    let params = [];
+
+    const [rows] = await con.query(sql, params);
+    const data = rows[0];
+
+    res.status(200).json({
+      success: true,
+      message: 'ดึงข้อมูลสถานะวันนี้สำเร็จ',
+      data: {
+        // ตัวอย่างผลลัพธ์: borrowed: 1, available: 7, disabled: 1
+        borrowed: data.borrowed || 0,
+        available: data.available || 0,
+        disabled: data.disabled || 0,
+      },
+      user_role: userRole,
+      lender_id: userRole === 'lender' ? lenderId : null
+    });
+  } catch (err) {
+    console.error('Error fetching today status:', err);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการดึงข้อมูลสถานะวันนี้',
+      error: err.message,
+    });
+  }
 });
-
-
 
 
 
