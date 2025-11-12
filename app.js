@@ -585,60 +585,188 @@ app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) =
 });
 
 // ---------- Lender: View pending borrow requests ----------
-app.get('/api/lender/requests',
-  authenticateToken,
-  authorizeRole(['lender']),
-  async (req, res) => {
-    try {
-      // 1. ดึง user_id ของผู้ใช้งานที่ล็อกอิน (Lender) จาก Token
-      const lenderId = req.user.user_id;
+// app.get('/api/lender/requests',
+//   authenticateToken,
+//   authorizeRole(['lender']),
+//   async (req, res) => {
+//     try {
+//       // 1. ดึง user_id ของผู้ใช้งานที่ล็อกอิน (Lender) จาก Token
+//       const lenderId = req.user.user_id;
 
-      // 2. Query ดึงคำขอที่รออนุมัติของ Lender คนนี้
-      const sql = `
-        SELECT 
-          b.borrow_id,
-          b.borrower_id,
-          u.username AS borrower_username,
-          b.game_id,
-          g.game_name,
-          b.from_date,
-          b.return_date,
-          b.status,
-          b.reason
-        FROM borrow b
-        JOIN users u ON b.borrower_id = u.user_id
-        JOIN game g ON b.game_id = g.game_id
-        WHERE b.status = 'pending'
-          AND b.lender_id = ?   -- กรองตาม lender_id ของผู้ใช้งาน
-        ORDER BY b.from_date ASC;
-      `;
+//       // 2. Query ดึงคำขอที่รออนุมัติของ Lender คนนี้
+//       const sql = `
+//         SELECT 
+//           b.borrow_id,
+//           b.borrower_id,
+//           u.username AS borrower_username,
+//           b.game_id,
+//           g.game_name,
+//           b.from_date,
+//           b.return_date,
+//           b.status,
+//           b.reason
+//         FROM borrow b
+//         JOIN users u ON b.borrower_id = u.user_id
+//         JOIN game g ON b.game_id = g.game_id
+//         WHERE b.status = 'pending'
+//           AND b.lender_id = ?   -- กรองตาม lender_id ของผู้ใช้งาน
+//         ORDER BY b.from_date ASC;
+//       `;
 
-      const [rows] = await con.query(sql, [lenderId]);
+//       const [rows] = await con.query(sql, [lenderId]);
 
-      // 3. กรณีไม่มีคำขอ pending
-      if (!rows || rows.length === 0) {
-        return res.status(200).json({
-          success: true,
-          count: 0,
-          message: 'ไม่มีคำขอยืมที่รออนุมัติในขณะนี้',
-          requests: [],
-        });
-      }
+//       // 3. กรณีไม่มีคำขอ pending
+//       if (!rows || rows.length === 0) {
+//         return res.status(200).json({
+//           success: true,
+//           count: 0,
+//           message: 'ไม่มีคำขอยืมที่รออนุมัติในขณะนี้',
+//           requests: [],
+//         });
+//       }
 
-      // 4. ส่งผลลัพธ์กลับ
-      res.status(200).json({
-        success: true,
-        count: rows.length,
-        requests: rows,
-      });
-    } catch (err) {
-      console.error('❌ Error fetching lender requests:', err);
-      res.status(500).json({
+//       // 4. ส่งผลลัพธ์กลับ
+//       res.status(200).json({
+//         success: true,
+//         count: rows.length,
+//         requests: rows,
+//       });
+//     } catch (err) {
+//       console.error('❌ Error fetching lender requests:', err);
+//       res.status(500).json({
+//         success: false,
+//         message: 'เกิดข้อผิดพลาดในการดึงรายการคำขอยืมที่รออนุมัติ',
+//         error: err.message,
+//       });
+//     }
+//   }
+// );
+
+
+app.get('/lender/pending', async (req, res) => {
+  const sql = `
+    SELECT 
+      b.borrow_id AS id, 
+      g.game_name,
+      g.game_pic_path, 
+      u.username AS borrower_name, 
+      b.from_date, 
+      b.return_date
+    FROM borrow b
+    LEFT JOIN game g ON b.game_id = g.game_id
+    LEFT JOIN users u ON b.borrower_id = u.user_id
+    WHERE b.status = 'pending'
+    ORDER BY b.from_date ASC
+  `;
+
+  try {
+    const [rows] = await con.query(sql);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+
+app.post('/lender/approve/:id', async (req, res) => {
+  const id = req.params.id;
+  try {
+    await con.query("UPDATE borrow SET status='approved' WHERE borrow_id=?", [id]);
+    res.send({ message: 'Approved' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/lender/disapprove/:id', async (req, res) => {
+  const id = req.params.id;
+  const reason = req.body.reason;
+  try {
+    await con.query("UPDATE borrow SET status='disapproved', reason=? WHERE borrow_id=?", [reason, id]);
+    res.send({ message: 'Disapproved' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Lender History API ---
+app.get('/HistoryLenderPage', async (req, res) => {
+  console.log('[HIT] /HistoryLenderPage', req.query);
+
+  try {
+    const lenderId = parseInt(req.query.lender_id, 10);
+    if (!Number.isInteger(lenderId) || lenderId <= 0) {
+      return res.status(400).json({
         success: false,
-        message: 'เกิดข้อผิดพลาดในการดึงรายการคำขอยืมที่รออนุมัติ',
-        error: err.message,
+        message: 'lender_id is required and must be a positive integer',
       });
     }
+
+    const q = String(req.query.q || '').trim();
+    const statusFilter = String(req.query.status || '').trim().toLowerCase();
+    const limitRaw = parseInt(req.query.limit || '100', 10);
+    const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
+
+    const sql = `
+      SELECT
+        b.borrow_id AS id,
+        g.game_name AS game,
+        CASE
+          WHEN b.status='approved'    THEN 'Approve'
+          WHEN b.status='disapproved' THEN 'Disapprove'
+          WHEN b.status='returned'   THEN 'Returned'
+          WHEN b.status='cancelled'  THEN 'Cancelled'
+          WHEN b.status='returning'  THEN 'Returning'
+          ELSE 'Pending'
+        END AS status,
+        uL.username AS borrowedBy,
+        uS.username AS returnedTo,
+        DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
+        DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
+        b.reason AS reason
+      FROM borrow b
+      JOIN game g ON g.game_id = b.game_id
+      LEFT JOIN users uL ON uL.user_id = b.borrower_id
+      LEFT JOIN users uS ON uS.user_id = b.staff_id
+      WHERE b.lender_id = ?
+        AND b.status IN ('approved', 'disapproved', 'returned', 'cancelled','returning')
+        ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
+        AND (
+          ? = '' OR
+          LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
+          LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
+          LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
+          LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
+          CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
+        )
+      ORDER BY b.from_date DESC
+      LIMIT ?
+    `;
+
+    const params = [lenderId];
+    if (statusFilter) params.push(statusFilter);
+    params.push(q, q, q, q, q, q);
+    params.push(limit);
+
+    const [rows] = await con.execute(sql, params);
+
+    res.json({
+      success: true,
+      count: rows.length,
+      items: rows,
+      lender_id: lenderId,
+      q,
+      status: statusFilter || undefined,
+    });
+  } catch (err) {
+    console.error('[HistoryLenderPage] error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 );
 // ---------- Lender status summary ---------
