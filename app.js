@@ -719,7 +719,16 @@ app.get('/api/status-summary', authenticateToken, async (req, res) => {
   }
 });
 
+// ---------- Staff ---------
+// ---------- Beam ---------
 
+// ---------- Gus ---------
+
+// ---------- Peach ---------
+
+// ---------- Pam ---------
+
+// ---------- Tear ---------
 
 // ---------- Server starts here ---------
 const PORT = 3000;
