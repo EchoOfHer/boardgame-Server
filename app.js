@@ -719,7 +719,6 @@ app.get('/api/status-summary', authenticateToken, async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
 app.get('/staff/games', async (req, res) => {
   try {
     const sql = `
@@ -802,10 +801,6 @@ app.put('/staff/game/status/:inventoryId', authenticateToken, authorizeRole(['st
     res.status(500).json({ success: false, message: err.message });
   }
 });
-=======
-// ---------- Staff ---------
-// ---------- Beam ---------
->>>>>>> 80c71b50d5237a5834b2c6deca2b1d17c6481872
 
 // ---------- Gus ---------
 
