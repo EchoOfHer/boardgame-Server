@@ -111,6 +111,29 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+//-------------------------- JWT decode -----------------------
+app.get('/api/username', function (req, res) {
+    // get token
+    let token = req.headers['authorization'] || req.headers['x-access-token'];
+    if (token == undefined || token == null) {
+        // no token
+        return res.status(400).send('No token');
+    }
+    // token found, extract token
+    if (req.headers.authorization) {
+        const tokenString = token.split(' ');
+        if (tokenString[0] == 'Bearer') {
+            token = tokenString[1];
+        }
+    }
+    // verify token
+    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(400).send('Incorrect token');
+        }
+        res.send(decoded);
+    });
+});
 
 // Middleware สำหรับตรวจสอบ JWT
 const authenticateToken = (req, res, next) => {
