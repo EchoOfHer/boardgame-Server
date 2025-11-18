@@ -885,6 +885,110 @@ app.put('/staff/game/status/:inventoryId', authenticateToken, authorizeRole(['st
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
+// PUT /api/staff/game/:gameId - เวอร์ชันสุดท้าย สำหรับ "แก้ไขข้อมูลเกมเดิมเท่านั้น"
+app.put('/api/staff/game/:gameId', authenticateToken, authorizeRole(['staff']), async (req, res) => {
+  const { gameId } = req.params;
+  const {
+    game_name,
+    style_id,
+    game_time,
+    game_min_player,
+    game_max_player,
+    game_link_howto,
+    game_pic_path,     // เพิ่มมาเผื่ออยากเปลี่ยนรูป
+    total_copies
+  } = req.body;
+
+  // ตรวจสอบข้อมูลสำคัญ
+  if (!game_name || game_time == null || game_min_player == null || game_max_player == null) {
+    return res.status(400).json({
+      success: false,
+      message: 'กรุณากรอกข้อมูลให้ครบ: ชื่อเกม, เวลาเล่น, จำนวนผู้เล่น'
+    });
+  }
+
+  const connection = await con.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    // 1. อัปเดตข้อมูลในตาราง game (เฉพาะแถวที่มี game_id นี้)
+    await connection.query(
+      `UPDATE game SET
+        game_name = ?,
+        style_id = ?,
+        game_time = ?,
+        game_min_player = ?,
+        game_max_player = ?,
+        game_link_howto = ?
+        ${game_pic_path ? ', game_pic_path = ?' : ''}
+      WHERE game_id = ?`,
+      [
+        game_name.trim(),
+        style_id ? parseInt(style_id) : null,
+        parseInt(game_time),
+        parseInt(game_min_player),
+        parseInt(game_max_player),
+        game_link_howto?.trim() || null,
+        ...(game_pic_path ? [game_pic_path.trim()] : []),
+        gameId
+      ].filter(Boolean)
+    );
+
+    // 2. จัดการจำนวนชุดใน game_inventory
+    if (total_copies !== undefined) {
+      const desired = parseInt(total_copies);
+      if (isNaN(desired) || desired < 0) {
+        throw new Error('จำนวนชุดไม่ถูกต้อง');
+      }
+
+      const [[{ current }]] = await connection.query(
+        'SELECT COUNT(*) AS current FROM game_inventory WHERE game_id = ?',
+        [gameId]
+      );
+
+      if (desired > current) {
+        // เพิ่มชุดใหม่
+        const values = Array(desired - current).fill([gameId, 'Available']);
+        await connection.query(
+          'INSERT INTO game_inventory (game_id, status) VALUES ?',
+          [values]
+        );
+      } else if (desired < current) {
+        // ลบเฉพาะชุดที่ไม่ถูกยืม
+        const removeCount = current - desired;
+        await connection.query(
+          `DELETE FROM game_inventory 
+           WHERE game_id = ? 
+           AND status = 'Available' 
+           ORDER BY inventory_id DESC 
+           LIMIT ?`,
+          [gameId, removeCount]
+        );
+      }
+    }
+
+    await connection.commit();
+
+    res.json({
+      success: true,
+      message: 'แก้ไขข้อมูลเกมสำเร็จ',
+      game_id: parseInt(gameId)
+    });
+
+  } catch (err) {
+    await connection.rollback();
+    console.error('Edit game error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'เกิดข้อผิดพลาดในการแก้ไขเกม',
+      error: err.message
+    });
+  } finally {
+    connection.release();
+  }
+});
+
 // ---------- Peach ---------
 // --- Staff History API ---
 app.get('/StaffHistory', async (req, res) => {
