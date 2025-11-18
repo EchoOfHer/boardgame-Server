@@ -803,12 +803,92 @@ app.put('/api/staff/confirm-return/:borrowId', authenticateToken, authorizeRole(
 });
 
 // ---------- Gus ---------
+app.get('/staff/games', async (req, res) => {
+  try {
+    const sql = `
+      SELECT 
+        g.game_id,
+        g.game_name,
+        g.style_id,
+        g.game_time,
+        g.game_min_player,
+        g.game_max_player,
+        g.game_link_howto,
+        g.game_pic_path,
+        
+        COUNT(*) as total_copies,
+        
+        SUM(CASE WHEN gi.status = 'Available' THEN 1 ELSE 0 END) as enabled_count,
+        SUM(CASE WHEN gi.status = 'Disabled' THEN 1 ELSE 0 END) as disabled_count,
+        
+        GROUP_CONCAT(gi.inventory_id) as item_ids,
+        GROUP_CONCAT(gi.status) as item_statuses
 
+      FROM game g
+      JOIN game_inventory gi ON g.game_id = gi.game_id
+      GROUP BY g.game_id, g.game_name, g.style_id, g.game_time, g.game_min_player, g.game_max_player, g.game_link_howto, g.game_pic_path
+      ORDER BY g.game_name
+    `;
+
+    const [rows] = await con.query(sql);
+
+    const games = rows.map(row => ({
+      gameName: row.game_name,
+      styleId: row.style_id,
+      gameTime: row.game_time,
+      minPlayers: row.game_min_player,
+      maxPlayers: row.game_max_player,
+      howToLink: row.game_link_howto,
+      picPath: row.game_pic_path,
+      totalCopies: parseInt(row.total_copies),
+      enabledCount: parseInt(row.enabled_count || 0),
+      disabledCount: parseInt(row.disabled_count || 0),
+      itemIds: row.item_ids ? row.item_ids.split(',').map(id => id.trim()) : [],
+      itemStatuses: row.item_statuses ? row.item_statuses.split(',').map(s => s.trim()) : []
+    }));
+
+    res.json({ success: true, games });
+  } catch (err) {
+    console.error("Games API Error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.put('/staff/game/status/:inventoryId', authenticateToken, authorizeRole(['staff']), async (req, res) => {
+  const { inventoryId } = req.params;
+  const { status } = req.body;
+
+  // ตรวจสอบสถานะที่อนุญาต
+  const allowedStatuses = ['Available', 'Disabled', 'Borrowing'];
+  if (!status || !allowedStatuses.includes(status)) {
+    return res.status(400).json({ success: false, message: 'Invalid status. Use: Available, Disabled, Borrowing' });
+  }
+
+  try {
+    const [result] = await con.query(
+      'UPDATE game_inventory SET status = ? WHERE inventory_id = ?',
+      [status, inventoryId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: 'Game not found or status unchanged' });
+    }
+
+    res.json({ 
+      success: true, 
+      message: `Status updated to ${status}`,
+      inventory_id: inventoryId,
+      new_status: status
+    });
+  } catch (err) {
+    console.error('Update game status error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
 // ---------- Peach ---------
 // --- Staff History API ---
 app.get('/StaffHistory', async (req, res) => {
   console.log('[HIT] /StaffHistory', req.query);
-
   try {
     const q = String(req.query.q || '').trim();
     const statusFilter = String(req.query.status || '').trim().toLowerCase();
@@ -819,7 +899,7 @@ app.get('/StaffHistory', async (req, res) => {
       SELECT
         b.borrow_id AS id,
         g.game_name AS game,
-
+        g.game_id AS gameId,
         CASE
           WHEN b.status='approved'    THEN 'Approve'
           WHEN b.status='disapproved' THEN 'Disapprove'
@@ -828,24 +908,19 @@ app.get('/StaffHistory', async (req, res) => {
           WHEN b.status='returning'   THEN 'Returning'
           ELSE 'Pending'
         END AS status,
-
         uBorrow.username AS borrowedBy,
         uLender.username AS lenderName,
         uStaff.username AS staffName,
-
         DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
         DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
-
         b.reason AS reason
       FROM borrow b
       JOIN game g ON g.game_id = b.game_id
       LEFT JOIN users uBorrow ON uBorrow.user_id = b.borrower_id
       LEFT JOIN users uLender ON uLender.user_id = b.lender_id
       LEFT JOIN users uStaff ON uStaff.user_id = b.staff_id
-
       WHERE b.status IN ('approved', 'disapproved', 'returned', 'cancelled', 'returning', 'pending')
       ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
-
       AND (
         ? = '' OR
         LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
@@ -855,25 +930,20 @@ app.get('/StaffHistory', async (req, res) => {
         LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
         CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
       )
-
       ORDER BY b.from_date DESC
       LIMIT ?
     `;
 
     const params = [];
-
     if (statusFilter) params.push(statusFilter);
 
-   
-    params.push(q); 
-    params.push(q); 
-    params.push(q); 
-    params.push(q); 
-    params.push(q); 
-    params.push(q); 
-    params.push(q); 
-
-   
+    params.push(q);
+    params.push(q);
+    params.push(q);
+    params.push(q);
+    params.push(q);
+    params.push(q);
+    params.push(q);
     params.push(limit);
 
     const [rows] = await con.query(sql, params);
@@ -885,7 +955,6 @@ app.get('/StaffHistory', async (req, res) => {
       q,
       status: statusFilter || undefined,
     });
-
   } catch (err) {
     console.error('[HistoryStaffPage] error:', err);
     res.status(500).json({
