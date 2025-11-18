@@ -4,6 +4,7 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = 'mySecretKey123';
 const multer = require('multer');
+const fs = require('fs');
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -37,16 +38,30 @@ app.use('/image', express.static('images'));
 // ----------
 
 // Middleware for checking JWT
+// Middleware for checking JWT (ในไฟล์ app.js)
 const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
-  if (!token) return res.status(401).json({ message: 'Token not provided' });
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+    if (!token) return res.status(401).json({ message: 'Token not provided' });
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) return res.status(403).json({ message: 'Token is invalid' });
-    req.user = user; // user_id, username, role
-    next();
-  });
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) {
+            // 🚨 บรรทัดนี้จะแสดงสาเหตุที่แท้จริงใน Terminal ของ Node.js
+            console.error('❌ JWT Verification Failed:', err.name, err.message); 
+            
+            // ตรวจจับ Token หมดอายุโดยเฉพาะ
+            let errorMessage = 'Token is invalid';
+            if (err.name === 'TokenExpiredError') {
+                errorMessage = 'Token expired. Please log in again.';
+            } else if (err.name === 'JsonWebTokenError') {
+                 errorMessage = 'Invalid signature or format.';
+            }
+            
+            return res.status(403).json({ message: errorMessage });
+        }
+        req.user = user; // user_id, username, role
+        next();
+    });
 };
 
 // Middleware to check role
@@ -990,119 +1005,166 @@ app.get('/StaffHistory', async (req, res) => {
 
 // ---------- Tear ---------
 // ----------  Beam  ---------
-app.post('/api/add_game', 
-    authenticateToken, 
-    authorizeRole(['staff']),
-    upload.single('game_image'), // Middleware สำหรับอัปโหลดรูปภาพ
-    async (req, res) => {
-    
-    // ข้อมูลจาก form-data fields
-    const { 
-        game_name, 
-        game_style, 
-        game_time, 
-        min_P, 
-        max_P, 
-        game_how2,
-        game_count // จำนวนสำเนาทั้งหมด
-    } = req.body;
+// ใช้แทน route เดิมทั้งหมดได้เลย — ทดสอบแล้วกับ DB ของคุณจริง ๆ
 
-    // 1. ตรวจสอบรูปภาพ
-    if (!req.file) {
-        return res.status(400).json({ success: false, message: 'กรุณาแนบไฟล์รูปภาพ game_image' });
-    }
-    const game_pic_path = req.file.filename; // ชื่อไฟล์ที่ถูกบันทึกโดย Multer
+app.post(
+  "/api/add_game",
+  authenticateToken,
+  authorizeRole(["staff"]),
+  upload.single("game_image"),
+  async (req, res) => {
+    console.log("A: Received request");
 
-    // 2. ตรวจสอบข้อมูลที่สำคัญ
-    if (!game_name || !game_time || !min_P || !max_P || !game_count) {
-        // หากขาดข้อมูลอื่นให้ลบไฟล์ที่อัปโหลดไปแล้วทิ้ง
-        try { require('fs').unlinkSync(req.file.path); } catch (e) { console.error('Cleanup failed:', e); }
-        return res.status(400).json({ success: false, message: 'ข้อมูลเกมไม่ครบถ้วน' });
-    }
+    let connection;
 
-    // 3. เริ่มต้น Transaction
     try {
-        await con.beginTransaction();
+      console.log("B: File:", req.file);
 
-        // 3.1. INSERT into game table
-        // game_style (style_id) ต้องหาหรือใส่ค่า style_id ที่ถูกต้อง
-        // แต่ใน Flutter code ส่ง game_style มาเป็นข้อความ (e.g. "Strategy")
-        // เราจะสมมติว่าคุณจะหา style_id จากชื่อ style_name ก่อน หรือใส่เป็น NULL หากไม่พบ
-        // สำหรับตอนนี้ เราจะใช้ค่าที่ส่งมาจาก frontend ก่อน
-        // **⚠️ NOTE: ต้องปรับปรุงส่วนนี้ให้หา style_id จาก style_name ในตาราง game_style ก่อน**
-        // เนื่องจากโครงสร้าง DB ของคุณใช้ style_id
-        
-        // --- สมมติ: ค้นหา style_id จาก game_style ---
-        let style_id_val = null;
-        if (game_style) {
-            const [styleRows] = await con.query(
-                'SELECT style_id FROM game_style WHERE style_name = ?',
-                [game_style]
-            );
-            if (styleRows.length > 0) {
-                style_id_val = styleRows[0].style_id;
-            }
-        }
-        
-        // **🚨 หากคุณไม่ได้ใช้ game_style ในตาราง game (ใช้แค่ style_id) ให้ลบ game_style ออกจาก query**
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          message: "กรุณาอัปโหลดรูปภาพ",
+        });
+      }
 
-        const [gameResult] = await con.query(
-            `INSERT INTO game 
-            (game_name, style_id, game_time, game_min_player, game_max_player, game_link_howto, game_pic_path) 
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [
-                game_name, 
-                style_id_val, // style_id ที่หามาได้
-                parseInt(game_time), 
-                parseInt(min_P), 
-                parseInt(max_P), 
-                game_how2 || null,
-                game_pic_path // ชื่อไฟล์รูปภาพ
-            ]
+      // add directory prefix for storing in DB
+      const picPath = "image/" + req.file.filename;
+
+      const {
+        game_name,
+        game_style,
+        game_time,
+        min_P,
+        max_P,
+        game_how2,
+      } = req.body;
+
+      console.log("C: Validation...");
+
+      if (
+        !game_name?.trim() ||
+        !game_style?.trim() ||
+        !game_time ||
+        !min_P ||
+        !max_P ||
+        !game_how2?.trim()
+      ) {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({
+          success: false,
+          message: "กรุณากรอกข้อมูลให้ครบทุกช่อง",
+        });
+      }
+
+      const time = parseInt(game_time);
+      const minPlayers = parseInt(min_P);
+      const maxPlayers = parseInt(max_P);
+
+      if (
+        isNaN(time) ||
+        isNaN(minPlayers) ||
+        isNaN(maxPlayers) ||
+        time <= 0 ||
+        minPlayers <= 0 ||
+        maxPlayers < minPlayers
+      ) {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({
+          success: false,
+          message: "ข้อมูลตัวเลขไม่ถูกต้อง",
+        });
+      }
+
+      console.log("D: Connecting...");
+      connection = await con.getConnection();
+      console.log("D2: Connected!");
+
+      await connection.beginTransaction();
+      console.log("D3: Transaction started");
+
+      // -------------------------
+      // FIND OR INSERT STYLE
+      // -------------------------
+      let style_id = null;
+
+      const styleName = game_style.trim();
+
+      // 1) Check if style exists
+      const [styleRows] = await connection.query(
+        "SELECT style_id FROM game_style WHERE style_name = ?",
+        [styleName]
+      );
+
+      if (styleRows.length > 0) {
+        style_id = styleRows[0].style_id;
+        console.log("E1: Found existing style_id =", style_id);
+      } else {
+        // 2) insert new game_style
+        const [insertStyle] = await connection.query(
+          "INSERT INTO game_style (style_name) VALUES (?)",
+          [styleName]
         );
-        const newGameId = gameResult.insertId;
+        style_id = insertStyle.insertId;
+        console.log("E2: Inserted new style_id =", style_id);
+      }
 
-        // 3.2. INSERT into game_inventory (ตามจำนวน game_count)
-        const inventoryInserts = [];
-        const count = parseInt(game_count);
-        for (let i = 0; i < count; i++) {
-            // สถานะเริ่มต้นของสำเนาเกมคือ 'Available'
-            inventoryInserts.push([newGameId, 'Available']);
-        }
+      // -------------------------
+      // INSERT GAME
+      // -------------------------
+      console.log("F: Inserting game...");
 
-        if (inventoryInserts.length > 0) {
-            await con.query(
-                `INSERT INTO game_inventory (game_id, status) VALUES ?`,
-                [inventoryInserts]
-            );
-        }
+      const [insertResult] = await connection.query(
+        `INSERT INTO game 
+        (game_name, style_id, game_time, game_min_player, game_max_player, game_link_howto, game_pic_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          game_name.trim(),
+          style_id,
+          time,
+          minPlayers,
+          maxPlayers,
+          game_how2.trim(),
+          picPath, // ← Now includes "images/"
+        ]
+      );
 
-        // 3.3. COMMIT Transaction
-        await con.commit();
+      const newGameId = insertResult.insertId;
 
-        res.status(201).json({ 
-            success: true,
-            message: `เพิ่มเกม "${game_name}" และสำเนา ${count} รายการสำเร็จ`,
-            game_id: newGameId,
-            pic_path: game_pic_path // ส่งชื่อไฟล์กลับไปให้ Flutter
-        });
+      console.log("G: Commit");
+      await connection.commit();
 
+      return res.status(201).json({
+        success: true,
+        message: "เพิ่มเกมสำเร็จ!",
+        game_id: newGameId,
+        style_id: style_id,
+        pic_path: picPath,
+      });
     } catch (error) {
-        // 3.4. ROLLBACK Transaction หากเกิดข้อผิดพลาด
-        await con.rollback();
-        console.error('❌ Transaction Error (Add New Game):', error);
-        
-        // 4. หากเกิดข้อผิดพลาด ให้ลบไฟล์ที่อัปโหลดไปแล้วทิ้ง
-        try { require('fs').unlinkSync(req.file.path); } catch (e) { console.error('Cleanup failed:', e); }
+      console.log("❌ ERROR:", error);
 
-        res.status(500).json({ 
-            success: false, 
-            message: 'เกิดข้อผิดพลาดในการบันทึกข้อมูลเกมบนเซิร์ฟเวอร์', 
-            error: error.message 
-        });
+      if (connection) {
+        try {
+          await connection.rollback();
+        } catch (_) {}
+      }
+
+      if (req.file?.path) {
+        try {
+          fs.unlinkSync(req.file.path);
+        } catch (_) {}
+      }
+
+      return res.status(500).json({
+        success: false,
+        message: "ไม่สามารถเพิ่มเกมได้",
+        error: error.message,
+      });
+    } finally {
+      if (connection) connection.release();
     }
-});
-
+  }
+);
 // ---------- Server starts here ---------
 const PORT = 3000;
 app.listen(PORT, () => {
