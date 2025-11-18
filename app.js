@@ -3,9 +3,29 @@ const app = express();
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = 'mySecretKey123';
+const multer = require('multer');
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        // 'images' คือชื่อโฟลเดอร์สำหรับเก็บรูปภาพ
+        cb(null, 'images');
+    },
+    filename: (req, file, cb) => {
+        // สร้างชื่อไฟล์ที่ไม่ซ้ำกัน: timestamp-random-ชื่อเดิม
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        // ตรวจสอบนามสกุลไฟล์
+        const fileExtension = file.originalname.split('.').pop();
+        cb(null, uniqueSuffix + '.' + fileExtension);
+    }
+});
+
+const upload = multer({ 
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 } // Limit file size to 5MB (Optional)
+});
 
 
 const con = require('./db');
@@ -969,6 +989,119 @@ app.get('/StaffHistory', async (req, res) => {
 // ---------- Pam ---------
 
 // ---------- Tear ---------
+// ----------  Beam  ---------
+app.post('/api/add_game', 
+    authenticateToken, 
+    authorizeRole(['staff']),
+    upload.single('game_image'), // Middleware สำหรับอัปโหลดรูปภาพ
+    async (req, res) => {
+    
+    // ข้อมูลจาก form-data fields
+    const { 
+        game_name, 
+        game_style, 
+        game_time, 
+        min_P, 
+        max_P, 
+        game_how2,
+        game_count // จำนวนสำเนาทั้งหมด
+    } = req.body;
+
+    // 1. ตรวจสอบรูปภาพ
+    if (!req.file) {
+        return res.status(400).json({ success: false, message: 'กรุณาแนบไฟล์รูปภาพ game_image' });
+    }
+    const game_pic_path = req.file.filename; // ชื่อไฟล์ที่ถูกบันทึกโดย Multer
+
+    // 2. ตรวจสอบข้อมูลที่สำคัญ
+    if (!game_name || !game_time || !min_P || !max_P || !game_count) {
+        // หากขาดข้อมูลอื่นให้ลบไฟล์ที่อัปโหลดไปแล้วทิ้ง
+        try { require('fs').unlinkSync(req.file.path); } catch (e) { console.error('Cleanup failed:', e); }
+        return res.status(400).json({ success: false, message: 'ข้อมูลเกมไม่ครบถ้วน' });
+    }
+
+    // 3. เริ่มต้น Transaction
+    try {
+        await con.beginTransaction();
+
+        // 3.1. INSERT into game table
+        // game_style (style_id) ต้องหาหรือใส่ค่า style_id ที่ถูกต้อง
+        // แต่ใน Flutter code ส่ง game_style มาเป็นข้อความ (e.g. "Strategy")
+        // เราจะสมมติว่าคุณจะหา style_id จากชื่อ style_name ก่อน หรือใส่เป็น NULL หากไม่พบ
+        // สำหรับตอนนี้ เราจะใช้ค่าที่ส่งมาจาก frontend ก่อน
+        // **⚠️ NOTE: ต้องปรับปรุงส่วนนี้ให้หา style_id จาก style_name ในตาราง game_style ก่อน**
+        // เนื่องจากโครงสร้าง DB ของคุณใช้ style_id
+        
+        // --- สมมติ: ค้นหา style_id จาก game_style ---
+        let style_id_val = null;
+        if (game_style) {
+            const [styleRows] = await con.query(
+                'SELECT style_id FROM game_style WHERE style_name = ?',
+                [game_style]
+            );
+            if (styleRows.length > 0) {
+                style_id_val = styleRows[0].style_id;
+            }
+        }
+        
+        // **🚨 หากคุณไม่ได้ใช้ game_style ในตาราง game (ใช้แค่ style_id) ให้ลบ game_style ออกจาก query**
+
+        const [gameResult] = await con.query(
+            `INSERT INTO game 
+            (game_name, style_id, game_time, game_min_player, game_max_player, game_link_howto, game_pic_path) 
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [
+                game_name, 
+                style_id_val, // style_id ที่หามาได้
+                parseInt(game_time), 
+                parseInt(min_P), 
+                parseInt(max_P), 
+                game_how2 || null,
+                game_pic_path // ชื่อไฟล์รูปภาพ
+            ]
+        );
+        const newGameId = gameResult.insertId;
+
+        // 3.2. INSERT into game_inventory (ตามจำนวน game_count)
+        const inventoryInserts = [];
+        const count = parseInt(game_count);
+        for (let i = 0; i < count; i++) {
+            // สถานะเริ่มต้นของสำเนาเกมคือ 'Available'
+            inventoryInserts.push([newGameId, 'Available']);
+        }
+
+        if (inventoryInserts.length > 0) {
+            await con.query(
+                `INSERT INTO game_inventory (game_id, status) VALUES ?`,
+                [inventoryInserts]
+            );
+        }
+
+        // 3.3. COMMIT Transaction
+        await con.commit();
+
+        res.status(201).json({ 
+            success: true,
+            message: `เพิ่มเกม "${game_name}" และสำเนา ${count} รายการสำเร็จ`,
+            game_id: newGameId,
+            pic_path: game_pic_path // ส่งชื่อไฟล์กลับไปให้ Flutter
+        });
+
+    } catch (error) {
+        // 3.4. ROLLBACK Transaction หากเกิดข้อผิดพลาด
+        await con.rollback();
+        console.error('❌ Transaction Error (Add New Game):', error);
+        
+        // 4. หากเกิดข้อผิดพลาด ให้ลบไฟล์ที่อัปโหลดไปแล้วทิ้ง
+        try { require('fs').unlinkSync(req.file.path); } catch (e) { console.error('Cleanup failed:', e); }
+
+        res.status(500).json({ 
+            success: false, 
+            message: 'เกิดข้อผิดพลาดในการบันทึกข้อมูลเกมบนเซิร์ฟเวอร์', 
+            error: error.message 
+        });
+    }
+});
 
 // ---------- Server starts here ---------
 const PORT = 3000;
