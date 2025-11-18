@@ -144,6 +144,7 @@ app.post('/api/logout', (req, res) => {
     message: 'ออกจากระบบสำเร็จ',
     info: 'Client ต้องลบ JWT Token ที่จัดเก็บไว้ด้วยตนเอง'
   });
+});
 //-------------------------- JWT decode -----------------------
 app.get('/api/username', function (req, res) {
     // get token
