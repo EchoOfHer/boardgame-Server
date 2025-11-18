@@ -144,6 +144,28 @@ app.post('/api/logout', (req, res) => {
     message: 'ออกจากระบบสำเร็จ',
     info: 'Client ต้องลบ JWT Token ที่จัดเก็บไว้ด้วยตนเอง'
   });
+//-------------------------- JWT decode -----------------------
+app.get('/api/username', function (req, res) {
+    // get token
+    let token = req.headers['authorization'] || req.headers['x-access-token'];
+    if (token == undefined || token == null) {
+        // no token
+        return res.status(400).send('No token');
+    }
+    // token found, extract token
+    if (req.headers.authorization) {
+        const tokenString = token.split(' ');
+        if (tokenString[0] == 'Bearer') {
+            token = tokenString[1];
+        }
+    }
+    // verify token
+    jwt.verify(token, JWT_SECRET, (err, decoded) => {
+        if (err) {
+            return res.status(400).send('Incorrect token');
+        }
+        res.send(decoded);
+    });
 });
 
 
@@ -779,6 +801,104 @@ app.put('/api/staff/confirm-return/:borrowId', authenticateToken, authorizeRole(
   }
 });
 
+// ---------- Gus ---------
+
+// ---------- Peach ---------
+// --- Staff History API ---
+app.get('/StaffHistory', async (req, res) => {
+  console.log('[HIT] /StaffHistory', req.query);
+
+  try {
+    const q = String(req.query.q || '').trim();
+    const statusFilter = String(req.query.status || '').trim().toLowerCase();
+    const limitRaw = parseInt(req.query.limit || '200', 10);
+    const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 200, 1), 300);
+
+    const sql = `
+      SELECT
+        b.borrow_id AS id,
+        g.game_name AS game,
+
+        CASE
+          WHEN b.status='approved'    THEN 'Approve'
+          WHEN b.status='disapproved' THEN 'Disapprove'
+          WHEN b.status='returned'    THEN 'Returned'
+          WHEN b.status='cancelled'   THEN 'Cancelled'
+          WHEN b.status='returning'   THEN 'Returning'
+          ELSE 'Pending'
+        END AS status,
+
+        uBorrow.username AS borrowedBy,
+        uLender.username AS lenderName,
+        uStaff.username AS staffName,
+
+        DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
+        DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
+
+        b.reason AS reason
+      FROM borrow b
+      JOIN game g ON g.game_id = b.game_id
+      LEFT JOIN users uBorrow ON uBorrow.user_id = b.borrower_id
+      LEFT JOIN users uLender ON uLender.user_id = b.lender_id
+      LEFT JOIN users uStaff ON uStaff.user_id = b.staff_id
+
+      WHERE b.status IN ('approved', 'disapproved', 'returned', 'cancelled', 'returning', 'pending')
+      ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
+
+      AND (
+        ? = '' OR
+        LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
+        LOWER(uBorrow.username) LIKE CONCAT('%', LOWER(?), '%') OR
+        LOWER(uLender.username) LIKE CONCAT('%', LOWER(?), '%') OR
+        LOWER(uStaff.username) LIKE CONCAT('%', LOWER(?), '%') OR
+        LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
+        CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
+      )
+
+      ORDER BY b.from_date DESC
+      LIMIT ?
+    `;
+
+    const params = [];
+
+    if (statusFilter) params.push(statusFilter);
+
+   
+    params.push(q); 
+    params.push(q); 
+    params.push(q); 
+    params.push(q); 
+    params.push(q); 
+    params.push(q); 
+    params.push(q); 
+
+   
+    params.push(limit);
+
+    const [rows] = await con.query(sql, params);
+
+    res.json({
+      success: true,
+      count: rows.length,
+      items: rows,
+      q,
+      status: statusFilter || undefined,
+    });
+
+  } catch (err) {
+    console.error('[HistoryStaffPage] error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Internal Server Error',
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+
+// ---------- Pam ---------
+
+// ---------- Tear ---------
 
 // ---------- Server starts here ---------
 const PORT = 3000;
