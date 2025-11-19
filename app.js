@@ -370,64 +370,101 @@ app.put('/staff/game/status/:inventoryId', authenticateToken, authorizeRole(['st
   } catch (err) { res.status(500).json({ success: false, message: err.message }); }
 });
 
-// ★ FIXED: Edit Game (เพิ่มการรับไฟล์รูปภาพและลบรูปเก่า)
+// ✅ FIXED & SMART: Edit Game (Handles both Game ID and Inventory ID)
 app.put('/api/staff/game/:gameId', authenticateToken, authorizeRole(['staff']), upload.single('game_image'), async (req, res) => {
-  const { gameId } = req.params;
-  const { game_name, style_id, game_style, game_time, game_min_player, game_max_player, game_link_howto, game_pic_path } = req.body;
+    const { gameId } = req.params;
+    const { game_name, style_id, game_time, game_min_player, game_max_player, game_link_howto } = req.body;
 
-  console.log(`[Edit Game] Processing ID: ${gameId}`); // Debug Log
+    console.log(`[Edit Game] Received Request for ID: ${gameId}`);
 
-  let connection;
-  try {
-    connection = await con.getConnection();
-    await connection.beginTransaction();
+    let connection;
+    try {
+        connection = await con.getConnection();
+        await connection.beginTransaction();
 
-    let finalStyleId = style_id;
-    if (!finalStyleId && game_style) {
-        const [styleRows] = await connection.query("SELECT style_id FROM game_style WHERE style_name = ?", [game_style]);
-        if (styleRows.length > 0) {
-            finalStyleId = styleRows[0].style_id;
-        } else {
-            const [insertStyle] = await connection.query("INSERT INTO game_style (style_name) VALUES (?)", [game_style]);
-            finalStyleId = insertStyle.insertId;
+        let targetGameId = gameId;
+
+        // 1. Try to find the game directly using the ID provided
+        let [existingGame] = await connection.query("SELECT game_id, game_pic_path FROM game WHERE game_id = ?", [targetGameId]);
+
+        // 2. If not found, assume the ID provided might be an INVENTORY ID and try to find the linked Game ID
+        if (existingGame.length === 0) {
+            console.log(`⚠️ ID ${gameId} not found in 'game' table. Checking 'game_inventory'...`);
+            const [inventoryRow] = await connection.query("SELECT game_id FROM game_inventory WHERE inventory_id = ?", [gameId]);
+            
+            if (inventoryRow.length > 0) {
+                targetGameId = inventoryRow[0].game_id;
+                console.log(`✅ Found via Inventory! Swapping ID ${gameId} -> Real Game ID ${targetGameId}`);
+                
+                // Re-fetch the game data using the correct Game ID
+                [existingGame] = await connection.query("SELECT game_id, game_pic_path FROM game WHERE game_id = ?", [targetGameId]);
+            }
         }
-    }
 
-    let finalPicPath = game_pic_path; // ค่าเดิม
-    if (req.file) {
-        console.log("📸 New image detected:", req.file.filename);
-        finalPicPath = "image/" + req.file.filename; // ค่าใหม่
+        // 3. If STILL not found, then the ID is truly invalid
+        if (existingGame.length === 0) {
+            await connection.rollback();
+            if (req.file) fs.unlinkSync(req.file.path);
+            return res.status(404).json({ success: false, message: `Game ID not found in database (ID: ${gameId})` });
+        }
 
-        // ลบไฟล์เก่าทิ้ง
-        const [oldGame] = await connection.query("SELECT game_pic_path FROM game WHERE game_id = ?", [gameId]);
-        if (oldGame.length > 0) {
-            const oldPath = oldGame[0].game_pic_path;
-            if (oldPath && oldPath !== 'image/default.jpg' && fs.existsSync(oldPath)) {
+        let currentPicPath = existingGame[0].game_pic_path;
+        let finalPicPath = currentPicPath;
+
+        // 4. Handle Image Replacement
+        if (req.file) {
+            console.log("📸 New image uploaded:", req.file.filename);
+            finalPicPath = "image/" + req.file.filename;
+
+            // Remove old image if it exists
+            if (currentPicPath && !currentPicPath.includes('default') && fs.existsSync(currentPicPath)) {
                 try {
-                    fs.unlinkSync(oldPath);
-                    console.log("🗑️ Deleted old image:", oldPath);
-                } catch (err) {
-                    console.error("⚠️ Error deleting old file:", err.message);
+                    fs.unlinkSync(currentPicPath);
+                } catch (delErr) {
+                    console.error("⚠️ Could not delete old image:", delErr.message);
                 }
             }
         }
+
+        // 5. Update the database using the CORRECT targetGameId
+        const sql = `
+            UPDATE game 
+            SET game_name = ?, 
+                style_id = ?, 
+                game_time = ?, 
+                game_min_player = ?, 
+                game_max_player = ?, 
+                game_link_howto = ?,
+                game_pic_path = ?
+            WHERE game_id = ?`;
+
+        await connection.query(sql, [
+            game_name, 
+            style_id, 
+            game_time, 
+            game_min_player, 
+            game_max_player, 
+            game_link_howto, 
+            finalPicPath, 
+            targetGameId // Use the verified Game ID
+        ]);
+
+        await connection.commit();
+
+        res.json({ 
+            success: true, 
+            message: 'Game updated successfully',
+            new_pic_path: finalPicPath 
+        });
+
+    } catch (err) {
+        if (connection) await connection.rollback();
+        if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        console.error("Update Error:", err);
+        res.status(500).json({ success: false, message: err.message });
+    } finally {
+        if (connection) connection.release();
     }
-
-    // บังคับอัปเดต game_pic_path ด้วย finalPicPath (ไม่ใช้ COALESCE ในส่วนรูปภาพแล้ว เพื่อความชัวร์)
-    await connection.query(
-      `UPDATE game SET game_name=?, style_id=COALESCE(?, style_id), game_time=?, game_min_player=?, game_max_player=?, game_link_howto=?, game_pic_path=? WHERE game_id=?`,
-      [game_name, finalStyleId, game_time, game_min_player, game_max_player, game_link_howto, finalPicPath, gameId]
-    );
-
-    await connection.commit();
-    res.json({ success: true, new_pic_path: finalPicPath });
-  } catch (err) {
-    if (connection) await connection.rollback();
-    if (req.file) fs.unlinkSync(req.file.path);
-    res.status(500).json({ success: false, message: err.message });
-  } finally {
-    if (connection) connection.release();
-  }
 });
 
 app.get('/StaffHistory', authenticateToken, authorizeRole(['staff']), async (req, res) => {
