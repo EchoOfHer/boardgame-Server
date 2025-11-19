@@ -208,8 +208,14 @@ app.get('/borrow-history', authenticateToken, async (req, res) => {
     }
 });
 
-app.get('/api/check-request/:user_id', async (req, res) => {
+app.get('/api/check-request/:user_id', authenticateToken, async (req, res) => {
   const { user_id } = req.params;
+  
+  // Security Check: ห้ามดูข้อมูลคนอื่น (ยกเว้น Staff)
+  if (req.user.user_id != user_id && req.user.role !== 'staff') {
+      return res.status(403).json({ message: 'Unauthorized access to other user data' });
+  }
+
   try {
     const sql = `
       SELECT b.borrow_id, b.status AS borrow_status, b.from_date, b.return_date,
@@ -218,22 +224,34 @@ app.get('/api/check-request/:user_id', async (req, res) => {
       WHERE b.borrower_id = ? AND b.status IN ('pending', 'approved', 'returning') ORDER BY b.borrow_id DESC`;
     const [results] = await con.query(sql, [user_id]);
     if (results.length === 0) return res.status(200).json({ message: 'ไม่พบคำขอยืม', data: [] });
+    
+    // ... (ส่วน mapping data เหมือนเดิม) ...
     const formatted = results.map(item => ({
       borrow_id: item.borrow_id, game_name: item.game_name, pic_path: item.game_pic_path,
       from_date: item.from_date, return_date: item.return_date, borrow_status: item.borrow_status,
       game_inventory_status: item.game_inventory_status, howto_link: item.game_link_howto
     }));
+
     res.status(200).json({ message: 'Success', data: formatted });
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }
 });
 
-app.put('/api/borrow/status/:borrowId', async (req, res) => {
+app.put('/api/borrow/status/:borrowId', authenticateToken, async (req, res) => {
   const { borrowId } = req.params;
   const { status } = req.body;
+  const userId = req.user.user_id; // เอา ID คนกดมาจาก Token
+
   if (!status || !['cancelled', 'returning'].includes(status.toLowerCase())) return res.status(400).json({ message: 'Invalid status' });
+
   try {
+    // Security Check: ตรวจสอบว่า Borrow ID นี้เป็นของ User คนนี้จริงๆ หรือไม่
+    const [checkOwner] = await con.query('SELECT * FROM borrow WHERE borrow_id = ? AND borrower_id = ?', [borrowId, userId]);
+    if (checkOwner.length === 0 && req.user.role !== 'staff') {
+        return res.status(403).json({ message: 'You do not have permission to modify this request' });
+    }
+
     const [result] = await con.query('UPDATE borrow SET status = ? WHERE borrow_id = ?', [status.toLowerCase(), borrowId]);
     if (result.affectedRows === 0) return res.status(404).json({ message: 'Borrow ID not found' });
     res.status(200).json({ message: 'Updated successfully' });
@@ -242,12 +260,17 @@ app.put('/api/borrow/status/:borrowId', async (req, res) => {
   }
 });
 
-app.post('/request-borrowing', async (req, res) => {
-  const { game_id, student_id, start_date, end_date } = req.body;
-  if (!game_id || !student_id || !start_date || !end_date) return res.status(400).json({ message: 'Missing fields' });
+app.post('/request-borrowing', authenticateToken, async (req, res) => {
+  // ไม่รับ student_id จาก body แล้ว ให้ใช้ req.user.user_id แทน
+  const { game_id, start_date, end_date } = req.body;
+  const student_id = req.user.user_id; // ปลอดภัยกว่า
+
+  if (!game_id || !start_date || !end_date) return res.status(400).json({ message: 'Missing fields' });
+  
   try {
     const [active] = await con.query("SELECT borrow_id FROM borrow WHERE borrower_id = ? AND status IN ('pending', 'approved', 'returning')", [student_id]);
     if (active.length > 0) return res.status(409).json({ message: 'Active request exists' });
+    
     const [result] = await con.query(
       'INSERT INTO borrow (borrower_id, game_id, from_date, return_date, status) VALUES (?, ?, ?, ?, ?)',
       [student_id, game_id, start_date, end_date, 'pending']
@@ -257,7 +280,6 @@ app.post('/request-borrowing', async (req, res) => {
     res.status(500).json({ message: 'Error', error: err.message });
   }
 });
-
 // ---------- LENDER ROUTES ----------
 app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) => {
   const { borrowId } = req.params;
