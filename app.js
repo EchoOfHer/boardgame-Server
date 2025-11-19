@@ -78,6 +78,7 @@ const authorizeRole = (roles) => {
 // AUTHENTICATION ROUTES
 // ----------
 
+// เปลี่ยนจากเดิมที่ส่งแค่ message → ส่ง token + user เหมือน login
 app.post('/api/register', async (req, res) => {
   const { username, password } = req.body;
   const role = 'borrower';
@@ -87,7 +88,6 @@ app.post('/api/register', async (req, res) => {
   }
 
   try {
-    // ตรวจสอบ Username ซ้ำ
     const [existingUsers] = await con.query(
       'SELECT user_id FROM users WHERE username = ?',
       [username]
@@ -97,20 +97,31 @@ app.post('/api/register', async (req, res) => {
       return res.status(409).json({ message: 'Username นี้มีผู้ใช้แล้ว' });
     }
 
-    // เข้ารหัสรหัสผ่าน (Hashing)
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
 
-    // บันทึกผู้ใช้ใหม่
     const [result] = await con.query(
       'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
       [username, password_hash, role]
     );
 
+    // สร้าง JWT ทันทีหลังสมัครสำเร็จ
+    const payload = {
+      user_id: result.insertId,
+      username: username,
+      role: role
+    };
+
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
+
+    // ส่งข้อมูลกลับเหมือน login
     res.status(201).json({
       message: 'ลงทะเบียนสำเร็จ',
+      token,
       user_id: result.insertId,
-      username: username
+      username: username,
+      role: role,
+      landingPage: 'student.main' // สำคัญ! ใช้ใน Flutter
     });
 
   } catch (error) {
