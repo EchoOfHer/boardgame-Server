@@ -339,84 +339,80 @@ app.get('/api/status-summary', authenticateToken, async (req, res) => {
 // ----------
 
 // Student: Get borrow history
-app.get('/borrow-history', async (req, res) => {
-  console.log('[HIT] /borrow-history', req.query);
+app.get('/borrow-history', authenticateToken, async (req, res) => {
+    console.log('[HIT] /borrow-history by student:', req.user.username);
 
-  try {
-    const borrowerId = parseInt(req.query.borrower_id, 10);
-    if (!Number.isInteger(borrowerId) || borrowerId <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'borrower_id is required and must be a positive integer',
-      });
+    try {
+        // ✅ ใช้ borrower_id จาก JWT token แทน query parameter
+        const borrowerId = req.user.user_id;
+        
+        const q = String(req.query.q || '').trim();
+        const statusFilter = String(req.query.status || '').trim().toLowerCase();
+        const limitRaw = parseInt(req.query.limit || '100', 10);
+        const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
+
+        const sql = `
+            SELECT
+                b.borrow_id AS id,
+                g.game_name AS game,
+                CASE
+                    WHEN b.status='approved'    THEN 'Approve'
+                    WHEN b.status='disapproved' THEN 'Disapprove'
+                    WHEN b.status='returned'    THEN 'Returned'
+                    WHEN b.status='cancelled'   THEN 'Cancelled'
+                    WHEN b.status='returning'   THEN 'Returning'
+                    ELSE 'Pending'
+                END AS status,
+                uL.username AS approvedBy,
+                uS.username AS returnedTo,
+                DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
+                DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
+                b.reason AS reason
+            FROM borrow b
+            JOIN game g ON g.game_id = b.game_id
+            JOIN users uB ON uB.user_id = b.borrower_id
+            LEFT JOIN users uL ON uL.user_id = b.lender_id
+            LEFT JOIN users uS ON uS.user_id = b.staff_id
+            WHERE b.borrower_id = ?
+                AND b.status IN ('approved', 'disapproved', 'returned', 'cancelled','returning')
+                ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
+                AND (
+                    ? = '' OR
+                    LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
+                    LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
+                    LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
+                    LOWER(b.status)    LIKE CONCAT('%', LOWER(?), '%') OR
+                    CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
+                )
+            ORDER BY b.from_date DESC
+            LIMIT ?
+        `;
+
+        const params = [borrowerId];
+        if (statusFilter) params.push(statusFilter);
+        params.push(q, q, q, q, q, q);
+        params.push(limit);
+
+        const [rows] = await con.query(sql, params);
+
+        res.status(200).json({
+            success: true,
+            count: rows.length,
+            items: rows,
+            borrower_id: borrowerId,
+            q,
+            status: statusFilter || undefined,
+        });
+    } catch (err) {
+        console.error('[borrow-history] error:', err);
+        res.status(500).json({
+            success: false,
+            message: 'Internal Server Error',
+            error: err instanceof Error ? err.message : String(err),
+        });
     }
-
-    const q = String(req.query.q || '').trim();
-    const statusFilter = String(req.query.status || '').trim().toLowerCase();
-    const limitRaw = parseInt(req.query.limit || '100', 10);
-    const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
-
-    const sql = `
-      SELECT
-        b.borrow_id AS id,
-        g.game_name AS game,
-        CASE
-          WHEN b.status='approved'    THEN 'Approve'
-          WHEN b.status='disapproved' THEN 'Disapprove'
-          WHEN b.status='returned'    THEN 'Returned'
-          WHEN b.status='cancelled'   THEN 'Cancelled'
-          WHEN b.status='returning'   THEN 'Returning'
-          ELSE 'Pending'
-        END AS status,
-        uL.username AS approvedBy,
-        uS.username AS returnedTo,
-        DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
-        DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
-        b.reason AS reason
-      FROM borrow b
-      JOIN game g ON g.game_id = b.game_id
-      JOIN users uB ON uB.user_id = b.borrower_id
-      LEFT JOIN users uL ON uL.user_id = b.lender_id
-      LEFT JOIN users uS ON uS.user_id = b.staff_id
-      WHERE b.borrower_id = ?
-        AND b.status IN ('approved', 'disapproved', 'returned', 'cancelled','returning')
-        ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
-        AND (
-          ? = '' OR
-          LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
-          LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
-          LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
-          LOWER(b.status)    LIKE CONCAT('%', LOWER(?), '%') OR
-          CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
-        )
-      ORDER BY b.from_date DESC
-      LIMIT ?
-    `;
-
-    const params = [borrowerId];
-    if (statusFilter) params.push(statusFilter);
-    params.push(q, q, q, q, q, q);
-    params.push(limit);
-
-    const [rows] = await con.query(sql, params);
-
-    return res.status(200).json({
-      success: true,
-      count: rows.length,
-      items: rows,
-      borrower_id: borrowerId,
-      q,
-      status: statusFilter || undefined,
-    });
-  } catch (err) {
-    console.error('[borrow-history] error:', err);
-    return res.status(500).json({
-      success: false,
-      message: 'Internal Server Error',
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
 });
+
 
 // Student: Check active requests
 app.get('/api/check-request/:user_id', async (req, res) => {
@@ -686,83 +682,78 @@ app.post('/lender/disapprove/:id', async (req, res) => {
 
 
 // Lender: Get History
-app.get('/HistoryLenderPage', async (req, res) => {
-  console.log('[HIT] /HistoryLenderPage', req.query);
+app.get('/HistoryLenderPage', authenticateToken, authorizeRole(['lender']), async (req, res) => {
+    console.log('[HIT] /HistoryLenderPage by lender:', req.user.username);
 
-  try {
-    const lenderId = parseInt(req.query.lender_id, 10);
-    if (!Number.isInteger(lenderId) || lenderId <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'lender_id is required and must be a positive integer',
-      });
+    try {
+        // ใช้ lender_id จาก JWT token
+        const lenderId = req.user.user_id;
+        const q = String(req.query.q || '').trim();
+        const statusFilter = String(req.query.status || '').trim().toLowerCase();
+        const limitRaw = parseInt(req.query.limit || '100', 10);
+        const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
+
+        const sql = `
+            SELECT
+                b.borrow_id AS id,
+                g.game_name AS game,
+                CASE
+                    WHEN b.status='approved'    THEN 'Approve'
+                    WHEN b.status='disapproved' THEN 'Disapprove'
+                    WHEN b.status='returned'    THEN 'Returned'
+                    WHEN b.status='cancelled'   THEN 'Cancelled'
+                    WHEN b.status='returning'   THEN 'Returning'
+                    ELSE 'Pending'
+                END AS status,
+                uL.username AS borrowedBy,
+                uS.username AS returnedTo,
+                DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
+                DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
+                b.reason AS reason
+            FROM borrow b
+            JOIN game g ON g.game_id = b.game_id
+            LEFT JOIN users uL ON uL.user_id = b.borrower_id
+            LEFT JOIN users uS ON uS.user_id = b.staff_id
+            WHERE b.lender_id = ?
+                AND b.status IN ('approved', 'disapproved', 'returned', 'cancelled', 'returning')
+                ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
+                AND (
+                    ? = '' OR
+                    LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
+                    LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
+                    LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
+                    LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
+                    CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
+                )
+            ORDER BY b.from_date DESC
+            LIMIT ?
+        `;
+
+        const params = [lenderId];
+        if (statusFilter) params.push(statusFilter);
+        params.push(q, q, q, q, q, q);
+        params.push(limit);
+
+        const [rows] = await con.query(sql, params);
+
+        res.json({
+            success: true,
+            count: rows.length,
+            items: rows,
+            lender_id: lenderId,
+            q,
+            status: statusFilter || undefined,
+        });
+    } catch (err) {
+        console.error('[HistoryLenderPage] error:', err);
+        res.status(500).json({
+            success: false,
+            message: 'Internal Server Error',
+            error: err instanceof Error ? err.message : String(err),
+        });
     }
-
-    const q = String(req.query.q || '').trim();
-    const statusFilter = String(req.query.status || '').trim().toLowerCase();
-    const limitRaw = parseInt(req.query.limit || '100', 10);
-    const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
-
-    const sql = `
-      SELECT
-        b.borrow_id AS id,
-        g.game_name AS game,
-        CASE
-          WHEN b.status='approved'    THEN 'Approve'
-          WHEN b.status='disapproved' THEN 'Disapprove'
-          WHEN b.status='returned'    THEN 'Returned'
-          WHEN b.status='cancelled'   THEN 'Cancelled'
-          WHEN b.status='returning'   THEN 'Returning'
-          ELSE 'Pending'
-        END AS status,
-        uL.username AS borrowedBy,
-        uS.username AS returnedTo,
-        DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
-        DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
-        b.reason AS reason
-      FROM borrow b
-      JOIN game g ON g.game_id = b.game_id
-      LEFT JOIN users uL ON uL.user_id = b.borrower_id
-      LEFT JOIN users uS ON uS.user_id = b.staff_id
-      WHERE b.lender_id = ?
-        AND b.status IN ('approved', 'disapproved', 'returned', 'cancelled', 'returning')
-        ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
-        AND (
-          ? = '' OR
-          LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
-          LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
-          LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
-          LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
-          CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
-        )
-      ORDER BY b.from_date DESC
-      LIMIT ?
-    `;
-
-    const params = [lenderId];
-    if (statusFilter) params.push(statusFilter);
-    params.push(q, q, q, q, q, q);
-    params.push(limit);
-
-    const [rows] = await con.query(sql, params);
-
-    res.json({
-      success: true,
-      count: rows.length,
-      items: rows,
-      lender_id: lenderId,
-      q,
-      status: statusFilter || undefined,
-    });
-  } catch (err) {
-    console.error('[HistoryLenderPage] error:', err);
-    res.status(500).json({
-      success: false,
-      message: 'Internal Server Error',
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
 });
+
 
 // ------------------
 // STAFF Return - Pam
@@ -982,82 +973,76 @@ app.put('/api/staff/game/:gameId', authenticateToken, authorizeRole(['staff']), 
 
 // ---------- Peach ---------
 // --- Staff History API ---
-app.get('/StaffHistory', async (req, res) => {
-  console.log('[HIT] /StaffHistory', req.query);
-  try {
-    const q = String(req.query.q || '').trim();
-    const statusFilter = String(req.query.status || '').trim().toLowerCase();
-    const limitRaw = parseInt(req.query.limit || '200', 10);
-    const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 200, 1), 300);
+app.get('/StaffHistory', authenticateToken, authorizeRole(['staff']), async (req, res) => {
+    console.log('[HIT] /StaffHistory by staff:', req.user.username);
 
-    const sql = `
-      SELECT
-        b.borrow_id AS id,
-        g.game_name AS game,
-        g.game_id AS gameId,
-        CASE
-          WHEN b.status='approved'    THEN 'Approve'
-          WHEN b.status='disapproved' THEN 'Disapprove'
-          WHEN b.status='returned'    THEN 'Returned'
-          WHEN b.status='cancelled'   THEN 'Cancelled'
-          WHEN b.status='returning'   THEN 'Returning'
-          ELSE 'Pending'
-        END AS status,
-        uBorrow.username AS borrowedBy,
-        uLender.username AS lenderName,
-        uStaff.username AS staffName,
-        DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
-        DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
-        b.reason AS reason
-      FROM borrow b
-      JOIN game g ON g.game_id = b.game_id
-      LEFT JOIN users uBorrow ON uBorrow.user_id = b.borrower_id
-      LEFT JOIN users uLender ON uLender.user_id = b.lender_id
-      LEFT JOIN users uStaff ON uStaff.user_id = b.staff_id
-      WHERE b.status IN ('approved', 'disapproved', 'returned', 'cancelled', 'returning', 'pending')
-      ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
-      AND (
-        ? = '' OR
-        LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
-        LOWER(uBorrow.username) LIKE CONCAT('%', LOWER(?), '%') OR
-        LOWER(uLender.username) LIKE CONCAT('%', LOWER(?), '%') OR
-        LOWER(uStaff.username) LIKE CONCAT('%', LOWER(?), '%') OR
-        LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
-        CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
-      )
-      ORDER BY b.from_date DESC
-      LIMIT ?
-    `;
+    try {
+        const q = String(req.query.q || '').trim();
+        const statusFilter = String(req.query.status || '').trim().toLowerCase();
+        const limitRaw = parseInt(req.query.limit || '200', 10);
+        const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 200, 1), 300);
 
-    const params = [];
-    if (statusFilter) params.push(statusFilter);
+        const sql = `
+            SELECT
+                b.borrow_id AS id,
+                g.game_name AS game,
+                CASE
+                    WHEN b.status='approved'    THEN 'Approve'
+                    WHEN b.status='disapproved' THEN 'Disapprove'
+                    WHEN b.status='returned'    THEN 'Returned'
+                    WHEN b.status='cancelled'   THEN 'Cancelled'
+                    WHEN b.status='returning'   THEN 'Returning'
+                    ELSE 'Pending'
+                END AS status,
+                uBorrow.username AS borrowedBy,
+                uLender.username AS lenderName,
+                uStaff.username AS staffName,
+                DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
+                DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
+                b.reason AS reason
+            FROM borrow b
+            JOIN game g ON g.game_id = b.game_id
+            LEFT JOIN users uBorrow ON uBorrow.user_id = b.borrower_id
+            LEFT JOIN users uLender ON uLender.user_id = b.lender_id
+            LEFT JOIN users uStaff ON uStaff.user_id = b.staff_id
+            WHERE b.status IN ('approved', 'disapproved', 'returned', 'cancelled', 'returning', 'pending')
+            ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
+            AND (
+                ? = '' OR
+                LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
+                LOWER(uBorrow.username) LIKE CONCAT('%', LOWER(?), '%') OR
+                LOWER(uLender.username) LIKE CONCAT('%', LOWER(?), '%') OR
+                LOWER(uStaff.username) LIKE CONCAT('%', LOWER(?), '%') OR
+                LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
+                CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
+            )
+            ORDER BY b.from_date DESC
+            LIMIT ?
+        `;
 
-    params.push(q);
-    params.push(q);
-    params.push(q);
-    params.push(q);
-    params.push(q);
-    params.push(q);
-    params.push(q);
-    params.push(limit);
+        const params = [];
+        if (statusFilter) params.push(statusFilter);
+        params.push(q, q, q, q, q, q, q);
+        params.push(limit);
 
-    const [rows] = await con.query(sql, params);
+        const [rows] = await con.query(sql, params);
 
-    res.json({
-      success: true,
-      count: rows.length,
-      items: rows,
-      q,
-      status: statusFilter || undefined,
-    });
-  } catch (err) {
-    console.error('[HistoryStaffPage] error:', err);
-    res.status(500).json({
-      success: false,
-      message: 'Internal Server Error',
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+        res.json({
+            success: true,
+            count: rows.length,
+            items: rows,
+            q,
+            status: statusFilter || undefined,
+        });
+
+    } catch (err) {
+        console.error('[StaffHistory] error:', err);
+        res.status(500).json({
+            success: false,
+            message: 'Internal Server Error',
+            error: err instanceof Error ? err.message : String(err),
+        });
+    }
 });
 
 
