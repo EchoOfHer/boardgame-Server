@@ -11,13 +11,10 @@ app.use(express.urlencoded({ extended: true }));
 
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        // 'images' คือชื่อโฟลเดอร์สำหรับเก็บรูปภาพ
         cb(null, 'images');
     },
     filename: (req, file, cb) => {
-        // สร้างชื่อไฟล์ที่ไม่ซ้ำกัน: timestamp-random-ชื่อเดิม
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        // ตรวจสอบนามสกุลไฟล์
         const fileExtension = file.originalname.split('.').pop();
         cb(null, uniqueSuffix + '.' + fileExtension);
     }
@@ -25,46 +22,35 @@ const storage = multer.diskStorage({
 
 const upload = multer({ 
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 } // Limit file size to 5MB (Optional)
+    limits: { fileSize: 5 * 1024 * 1024 } 
 });
 
-
 const con = require('./db');
-// ---------- image in server local storage ---------
 app.use('/image', express.static('images'));
 
 // ----------
-// MIDDLEWARE (Required for all auth routes)
+// MIDDLEWARE
 // ----------
 
-// Middleware for checking JWT
-// Middleware for checking JWT (ในไฟล์ app.js)
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
+    const token = authHeader && authHeader.split(' ')[1];
     if (!token) return res.status(401).json({ message: 'Token not provided' });
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            // 🚨 บรรทัดนี้จะแสดงสาเหตุที่แท้จริงใน Terminal ของ Node.js
-            console.error('❌ JWT Verification Failed:', err.name, err.message); 
-            
-            // ตรวจจับ Token หมดอายุโดยเฉพาะ
+            console.error('❌ JWT Verification Failed:', err.name, err.message);
             let errorMessage = 'Token is invalid';
             if (err.name === 'TokenExpiredError') {
                 errorMessage = 'Token expired. Please log in again.';
-            } else if (err.name === 'JsonWebTokenError') {
-                 errorMessage = 'Invalid signature or format.';
             }
-            
             return res.status(403).json({ message: errorMessage });
         }
-        req.user = user; // user_id, username, role
+        req.user = user;
         next();
     });
 };
 
-// Middleware to check role
 const authorizeRole = (roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
@@ -87,31 +73,20 @@ app.post('/api/register', async (req, res) => {
   }
 
   try {
-    // ตรวจสอบ Username ซ้ำ
-    const [existingUsers] = await con.query(
-      'SELECT user_id FROM users WHERE username = ?',
-      [username]
-    );
-
+    const [existingUsers] = await con.query('SELECT user_id FROM users WHERE username = ?', [username]);
     if (existingUsers.length > 0) {
       return res.status(409).json({ message: 'Username นี้มีผู้ใช้แล้ว' });
     }
 
-    // เข้ารหัสรหัสผ่าน (Hashing)
     const salt = await bcrypt.genSalt(10);
     const password_hash = await bcrypt.hash(password, salt);
 
-    // บันทึกผู้ใช้ใหม่
     const [result] = await con.query(
       'INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)',
       [username, password_hash, role]
     );
 
-    res.status(201).json({
-      message: 'ลงทะเบียนสำเร็จ',
-      user_id: result.insertId,
-      username: username
-    });
+    res.status(201).json({ message: 'ลงทะเบียนสำเร็จ', user_id: result.insertId, username: username });
 
   } catch (error) {
     console.error('Registration Error:', error);
@@ -119,7 +94,6 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// POST /api/login - เข้าสู่ระบบและรับ JWT Token
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
 
@@ -138,26 +112,17 @@ app.post('/api/login', async (req, res) => {
     }
 
     const user = users[0];
-
     const isMatch = await bcrypt.compare(password, user.password_hash);
     if (!isMatch) {
       return res.status(401).json({ message: 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' });
     }
 
-    const payload = {
-      user_id: user.user_id,
-      username: user.username,
-      role: user.role
-    };
-
+    const payload = { user_id: user.user_id, username: user.username, role: user.role };
     const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '24h' });
 
     let landingPage = 'student.main';
-    if (user.role === 'lender') {
-      landingPage = 'lender.main';
-    } else if (user.role === 'staff') {
-      landingPage = 'staff.main';
-    }
+    if (user.role === 'lender') landingPage = 'lender.main';
+    else if (user.role === 'staff') landingPage = 'staff.main';
 
     res.json({
       message: 'เข้าสู่ระบบสำเร็จ',
@@ -173,102 +138,58 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// POST /api/logout - ออกจากระบบ
 app.post('/api/logout', (req, res) => {
-  res.status(200).json({
-    message: 'ออกจากระบบสำเร็จ',
-    info: 'Client ต้องลบ JWT Token ที่จัดเก็บไว้ด้วยตนเอง'
-  });
+  res.status(200).json({ message: 'ออกจากระบบสำเร็จ', info: 'Client ต้องลบ JWT Token เอง' });
 });
-//-------------------------- JWT decode -----------------------
+
 app.get('/api/username', function (req, res) {
-    // get token
-    let token = req.headers['authorization'] || req.headers['x-access-token'];
-    if (token == undefined || token == null) {
-        // no token
-        return res.status(400).send('No token');
-    }
-    // token found, extract token
-    if (req.headers.authorization) {
-        const tokenString = token.split(' ');
-        if (tokenString[0] == 'Bearer') {
-            token = tokenString[1];
-        }
-    }
-    // verify token
+    let token = req.headers['authorization'];
+    if (!token) return res.status(400).send('No token');
+    if (token.startsWith('Bearer ')) token = token.slice(7);
+
     jwt.verify(token, JWT_SECRET, (err, decoded) => {
-        if (err) {
-            return res.status(400).send('Incorrect token');
-        }
+        if (err) return res.status(400).send('Incorrect token');
         res.send(decoded);
     });
 });
-
 
 // ----------
 // DASHBOARD & GENERAL ROUTES
 // ----------
 
-// Dashboardสำหรับทุก role
 app.get('/api/dashboard', authenticateToken, (req, res) => {
-  res.json({
-    message: `ยินดีต้อนรับสู่ Dashboard ของ ${req.user.role}`,
-    user_info: req.user
-  });
+  res.json({ message: `Dashboard for ${req.user.role}`, user_info: req.user });
 });
 
-// Dashboard สำหรับ Student / Borrower เท่านั้น
 app.get('/api/student/dashboard', authenticateToken, authorizeRole(['borrower']), (req, res) => {
-  res.json({
-    message: 'ยินดีต้อนรับสู่ Student Dashboard',
-    student_info: req.user
-  });
+  res.json({ message: 'Student Dashboard', student_info: req.user });
 });
 
-// Dashboard สำหรับ Lender เท่านั้น
 app.get('/api/lender/dashboard', authenticateToken, authorizeRole(['lender']), (req, res) => {
-  res.json({
-    message: 'ยินดีต้อนรับสู่ Lender Dashboard',
-    lender_info: req.user
-  });
+  res.json({ message: 'Lender Dashboard', lender_info: req.user });
 });
 
-// Dashboard สำหรับ Staff เท่านั้น
 app.get('/api/staff/dashboard', authenticateToken, authorizeRole(['staff']), (req, res) => {
-  res.json({
-    message: 'ยินดีต้อนรับสู่ Staff Dashboard',
-    staff_info: req.user
-  });
+  res.json({ message: 'Staff Dashboard', staff_info: req.user });
 });
 
-// Get all games
 app.get('/api/games', async (req, res) => {
-  console.log('Received GET request for /api/games');
   try {
     const sql = `
             SELECT
-                gi.inventory_id,
-                g.game_id,
-                g.game_name AS gameName,
+                gi.inventory_id, g.game_id, g.game_name AS gameName,
                 COALESCE(gs.style_name, 'Unknown Style') AS gameStyle,
-                g.game_pic_path AS picPath,
-                g.game_min_player AS minP,
-                g.game_max_player AS maxP,
-                g.game_time AS gTime,
-                g.game_link_howto AS g_link,
-                g.game_name AS gameGroup,
+                g.game_pic_path AS picPath, g.game_min_player AS minP,
+                g.game_max_player AS maxP, g.game_time AS gTime,
+                g.game_link_howto AS g_link, g.game_name AS gameGroup,
                 gi.status AS status 
-            FROM
-                game_inventory gi
+            FROM game_inventory gi
             JOIN game g ON gi.game_id = g.game_id
-            LEFT JOIN game_style gs 
-                ON g.style_id = gs.style_id
-            ORDER BY 
-                g.game_name, gi.inventory_id;
+            LEFT JOIN game_style gs ON g.style_id = gs.style_id
+            ORDER BY g.game_name, gi.inventory_id;
         `;
-
     const [results] = await con.query(sql);
-
+    
     const gameList = results.map(row => ({
       inventory_id: row.inventory_id,
       game_id: row.game_id,
@@ -282,79 +203,54 @@ app.get('/api/games', async (req, res) => {
       g_link: row.g_link,
       gameGroup: row.gameGroup
     }));
-
     res.status(200).json(gameList);
   } catch (err) {
     console.error('🚨 Error fetching games:', err);
-    res.status(500).json({
-      message: 'Failed to retrieve game list from database.',
-      error: err.message
-    });
+    res.status(500).json({ message: 'Failed to retrieve games', error: err.message });
   }
 });
 
-// Status summary for dashboard
 app.get('/api/status-summary', authenticateToken, async (req, res) => {
   try {
-    const user = req.user;
-    const userRole = user.role;
-    const lenderId = user.user_id;
-
-    let sql = `
+    const sql = `
         SELECT
           SUM(CASE WHEN status = 'Borrowing' THEN 1 ELSE 0 END) AS borrowed,
           SUM(CASE WHEN status = 'Available' THEN 1 ELSE 0 END) AS available,
           SUM(CASE WHEN status = 'Disabled' THEN 1 ELSE 0 END) AS disabled
         FROM game_inventory;
     `;
-    let params = [];
-
-    const [rows] = await con.query(sql, params);
+    const [rows] = await con.query(sql);
     const data = rows[0];
 
     res.status(200).json({
       success: true,
-      message: 'ดึงข้อมูลสถานะวันนี้สำเร็จ',
       data: {
         borrowed: data.borrowed || 0,
         available: data.available || 0,
         disabled: data.disabled || 0,
       },
-      user_role: userRole,
-      lender_id: userRole === 'lender' ? lenderId : null
+      user_role: req.user.role,
+      lender_id: req.user.role === 'lender' ? req.user.user_id : null
     });
   } catch (err) {
-    console.error('Error fetching today status:', err);
-    res.status(500).json({
-      success: false,
-      message: 'เกิดข้อผิดพลาดในการดึงข้อมูลสถานะวันนี้',
-      error: err.message,
-    });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
-
 
 // ----------
 // STUDENT (BORROWER) ROUTES
 // ----------
 
-// Student: Get borrow history
 app.get('/borrow-history', authenticateToken, async (req, res) => {
-    console.log('[HIT] /borrow-history by student:', req.user.username);
-
     try {
-        // ✅ ใช้ borrower_id จาก JWT token แทน query parameter
         const borrowerId = req.user.user_id;
-        
         const q = String(req.query.q || '').trim();
         const statusFilter = String(req.query.status || '').trim().toLowerCase();
-        const limitRaw = parseInt(req.query.limit || '100', 10);
-        const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
+        const limit = Math.min(Math.max(parseInt(req.query.limit || '100'), 1), 200);
 
         const sql = `
             SELECT
-                b.borrow_id AS id,
-                g.game_name AS game,
+                b.borrow_id AS id, g.game_name AS game,
                 CASE
                     WHEN b.status='approved'    THEN 'Approve'
                     WHEN b.status='disapproved' THEN 'Disapprove'
@@ -363,8 +259,7 @@ app.get('/borrow-history', authenticateToken, async (req, res) => {
                     WHEN b.status='returning'   THEN 'Returning'
                     ELSE 'Pending'
                 END AS status,
-                uL.username AS approvedBy,
-                uS.username AS returnedTo,
+                uL.username AS approvedBy, uS.username AS returnedTo,
                 DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
                 DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
                 b.reason AS reason
@@ -379,72 +274,37 @@ app.get('/borrow-history', authenticateToken, async (req, res) => {
                 AND (
                     ? = '' OR
                     LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
-                    LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
-                    LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
-                    LOWER(b.status)    LIKE CONCAT('%', LOWER(?), '%') OR
                     CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
                 )
-            ORDER BY b.from_date DESC
-            LIMIT ?
+            ORDER BY b.from_date DESC LIMIT ?
         `;
 
         const params = [borrowerId];
         if (statusFilter) params.push(statusFilter);
-        params.push(q, q, q, q, q, q);
-        params.push(limit);
+        params.push(q, q, q, limit);
 
         const [rows] = await con.query(sql, params);
-
-        res.status(200).json({
-            success: true,
-            count: rows.length,
-            items: rows,
-            borrower_id: borrowerId,
-            q,
-            status: statusFilter || undefined,
-        });
+        res.status(200).json({ success: true, count: rows.length, items: rows });
     } catch (err) {
         console.error('[borrow-history] error:', err);
-        res.status(500).json({
-            success: false,
-            message: 'Internal Server Error',
-            error: err instanceof Error ? err.message : String(err),
-        });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
-
-// Student: Check active requests
 app.get('/api/check-request/:user_id', async (req, res) => {
   const { user_id } = req.params;
-
   try {
     const sql = `
- SELECT 
- b.borrow_id,
-b.status AS borrow_status,
-b.from_date,
- b.return_date,
- g.game_name,
- g.game_pic_path,
- g.game_link_howto,
- gi.status AS game_inventory_status
- FROM borrow b
-JOIN game g ON b.game_id = g.game_id
- JOIN game_inventory gi ON g.game_id = gi.game_id
-WHERE b.borrower_id = ?
-AND b.status IN ('pending', 'approved', 'returning')
-ORDER BY b.borrow_id DESC;
- `;
-
+      SELECT b.borrow_id, b.status AS borrow_status, b.from_date, b.return_date,
+      g.game_name, g.game_pic_path, g.game_link_howto, gi.status AS game_inventory_status
+      FROM borrow b
+      JOIN game g ON b.game_id = g.game_id
+      JOIN game_inventory gi ON g.game_id = gi.game_id
+      WHERE b.borrower_id = ? AND b.status IN ('pending', 'approved', 'returning')
+      ORDER BY b.borrow_id DESC;
+    `;
     const [results] = await con.query(sql, [user_id]);
-
-    if (results.length === 0) {
-      return res.status(200).json({
-        message: 'ไม่พบคำขอยืมหรือประวัติการยืมของผู้ใช้นี้',
-        data: []
-      });
-    }
+    if (results.length === 0) return res.status(200).json({ message: 'ไม่พบคำขอยืม', data: [] });
 
     const formatted = results.map(item => ({
       borrow_id: item.borrow_id,
@@ -456,183 +316,103 @@ ORDER BY b.borrow_id DESC;
       game_inventory_status: item.game_inventory_status,
       howto_link: item.game_link_howto
     }));
-
-    res.status(200).json({
-      message: 'ดึงข้อมูลคำขอยืมสำเร็จ',
-      data: formatted
-    });
+    res.status(200).json({ message: 'Success', data: formatted });
   } catch (err) {
-    console.error('❌ Error fetching check request:', err);
-    res.status(500).json({
-      message: 'เกิดข้อผิดพลาดในการดึงข้อมูลคำขอยืม',
-      error: err.message
-    });
+    res.status(500).json({ message: 'Error', error: err.message });
   }
 });
 
-// Student: Cancel or Mark for Returning
 app.put('/api/borrow/status/:borrowId', async (req, res) => {
   const { borrowId } = req.params;
   const { status } = req.body;
 
   if (!status || !['cancelled', 'returning'].includes(status.toLowerCase())) {
-    return res.status(400).json({ message: 'สถานะที่ส่งมาไม่ถูกต้อง (ต้องเป็น cancelled หรือ returning)' });
+    return res.status(400).json({ message: 'Invalid status' });
   }
 
   try {
-    let updateStatus = status.toLowerCase();
-
-    const sql = `
-            UPDATE borrow
-            SET status = ?
-            WHERE borrow_id = ?;
-        `;
-
-    const [result] = await con.query(sql, [updateStatus, borrowId]);
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'ไม่พบรายการยืมที่ต้องการอัปเดต' });
-    }
-
-    res.status(200).json({
-      message: `อัปเดตสถานะการยืม ${borrowId} เป็น ${updateStatus} สำเร็จ`,
-      borrow_id: borrowId,
-      new_status: updateStatus
-    });
-
+    const [result] = await con.query('UPDATE borrow SET status = ? WHERE borrow_id = ?', [status.toLowerCase(), borrowId]);
+    if (result.affectedRows === 0) return res.status(404).json({ message: 'Borrow ID not found' });
+    res.status(200).json({ message: 'Updated successfully' });
   } catch (err) {
-    console.error('❌ Error updating borrow status:', err);
-    res.status(500).json({
-      message: 'เกิดข้อผิดพลาดในการอัปเดตสถานะ',
-      error: err.message
-    });
+    res.status(500).json({ message: 'Error', error: err.message });
   }
 });
 
-// Student: Request a new borrow
 app.post('/request-borrowing', async (req, res) => {
   const { game_id, student_id, start_date, end_date } = req.body;
-  const initialStatus = 'pending';
 
   if (!game_id || !student_id || !start_date || !end_date) {
-    return res.status(400).json({ message: 'Missing required fields.' });
+    return res.status(400).json({ message: 'Missing fields' });
   }
 
   try {
-    // Check if the user already has an active request
-    const [activeBorrows] = await con.query(
-      "SELECT borrow_id FROM borrow WHERE borrower_id = ? AND status IN ('pending', 'approved', 'returning')",
-      [student_id]
+    const [active] = await con.query("SELECT borrow_id FROM borrow WHERE borrower_id = ? AND status IN ('pending', 'approved', 'returning')", [student_id]);
+    if (active.length > 0) return res.status(409).json({ message: 'You already have an active request.' });
+
+    const [result] = await con.query(
+      'INSERT INTO borrow (borrower_id, game_id, from_date, return_date, status) VALUES (?, ?, ?, ?, ?)',
+      [student_id, game_id, start_date, end_date, 'pending']
     );
-
-    if (activeBorrows.length > 0) {
-      return res.status(409).json({ message: 'Borrow request failed: You already have an active request.' });
-    }
-
-    // Insert new borrow record
-    const sql = `
-            INSERT INTO borrow (borrower_id, game_id, from_date, return_date, status)
-            VALUES (?, ?, ?, ?, ?);
-        `;
-
-    const [result] = await con.query(sql, [
-      student_id,
-      game_id,
-      start_date,
-      end_date,
-      initialStatus
-    ]);
-
-    res.status(200).json({
-      message: 'Borrow request successfully created and is pending approval.',
-      borrow_id: result.insertId,
-      status: initialStatus
-    });
-
+    res.status(200).json({ message: 'Request created', borrow_id: result.insertId });
   } catch (err) {
-    console.error('❌ Error requesting borrowing:', err);
-    res.status(500).json({
-      message: 'เกิดข้อผิดพลาดในการสร้างคำขอยืม',
-      error: err.message
-    });
+    res.status(500).json({ message: 'Error', error: err.message });
   }
 });
 
-
 // ----------
-// LENDER ROUTES
+// LENDER ROUTES (SECURED)
 // ----------
 
-// Lender: Approve/Disapprove a request
+// Lender: Approve/Disapprove
 app.post('/api/borrow/approval/:borrowId', authenticateToken, async (req, res) => {
   const { borrowId } = req.params;
-  const { status, lender_id, reason } = req.body;
+  const { status, reason } = req.body;
 
-  const allowedStatuses = ['approved', 'disapproved'];
-  if (!status || !allowedStatuses.includes(status.toLowerCase())) {
-    return res.status(400).json({ message: 'สถานะต้องเป็น approved หรือ disapproved' });
+  const approverId = req.user.user_id; // ✅ ใช้ ID จาก Token
+  const userRole = req.user.role;
+
+  if (!['lender', 'staff'].includes(userRole)) {
+      return res.status(403).json({ message: 'ไม่มีสิทธิ์ทำรายการนี้' });
   }
 
-  if (!lender_id || isNaN(parseInt(lender_id))) {
-    return res.status(400).json({ message: 'lender_id จำเป็น' });
+  if (!status || !['approved', 'disapproved'].includes(status.toLowerCase())) {
+    return res.status(400).json({ message: 'Invalid status' });
   }
 
   const updateStatus = status.toLowerCase();
-  const approverId = parseInt(lender_id, 10);
-  const updateField = req.user.role === 'lender' ? 'lender_id' : 'staff_id';
+  const updateField = userRole === 'lender' ? 'lender_id' : 'staff_id';
 
-  if (updateStatus === 'disapproved' && (!reason || reason.trim() === '')) {
-    return res.status(400).json({ message: 'ต้องระบุเหตุผลสำหรับการไม่อนุมัติ' });
+  if (updateStatus === 'disapproved' && !reason) {
+    return res.status(400).json({ message: 'Reason required for disapproval' });
   }
 
   try {
-    const [borrowInfo] = await con.query(
-      'SELECT status FROM borrow WHERE borrow_id = ?',
-      [borrowId]
-    );
-
-    if (borrowInfo.length === 0 || borrowInfo[0].status !== 'pending') {
-      return res.status(404).json({ message: 'ไม่พบคำขอหรือสถานะไม่ใช่ pending' });
+    const [info] = await con.query('SELECT status FROM borrow WHERE borrow_id = ?', [borrowId]);
+    if (info.length === 0 || info[0].status !== 'pending') {
+      return res.status(404).json({ message: 'Borrow request not found or not pending' });
     }
 
     let sql, params;
-
     if (updateStatus === 'approved') {
-      sql = `
-                UPDATE borrow 
-                SET status = ?, ${updateField} = ?
-                WHERE borrow_id = ? AND status = 'pending'
-            `;
+      sql = `UPDATE borrow SET status = ?, ${updateField} = ? WHERE borrow_id = ?`;
       params = [updateStatus, approverId, borrowId];
     } else {
-      sql = `
-                UPDATE borrow 
-                SET status = ?, ${updateField} = ?, reason = ?
-                WHERE borrow_id = ? AND status = 'pending'
-            `;
+      sql = `UPDATE borrow SET status = ?, ${updateField} = ?, reason = ? WHERE borrow_id = ?`;
       params = [updateStatus, approverId, reason, borrowId];
     }
 
-    const [result] = await con.query(sql, params);
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'อัปเดตไม่สำเร็จ: สถานะอาจเปลี่ยนไปแล้ว' });
-    }
-
-    res.status(200).json({
-      message: `สถานะอัปเดตเป็น ${updateStatus} สำเร็จ`,
-      borrow_id: borrowId,
-      new_status: updateStatus
-    });
+    await con.query(sql, params);
+    res.status(200).json({ message: `Updated to ${updateStatus}`, action_by: approverId });
 
   } catch (err) {
-    console.error('Error in approval:', err);
-    res.status(500).json({ message: 'เซิร์ฟเวอร์ error', error: err.message });
+    res.status(500).json({ message: 'Error', error: err.message });
   }
 });
 
 // Lender: Get pending list
-app.get('/lender/pending', async (req, res) => {
+// ★ FIXED: เพิ่ม authenticateToken เพื่อป้องกันคนนอก
+app.get('/lender/pending', authenticateToken, authorizeRole(['lender']), async (req, res) => {
   const sql = `
     SELECT 
       b.borrow_id AS id, 
@@ -657,46 +437,19 @@ app.get('/lender/pending', async (req, res) => {
   }
 });
 
-// Lender: Approve (Simple route)
-app.post('/lender/approve/:id', async (req, res) => {
-  const id = req.params.id;
-  try {
-    await con.query("UPDATE borrow SET status='approved' WHERE borrow_id=?", [id]);
-    res.send({ message: 'Approved' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Lender: Disapprove (Simple route)
-app.post('/lender/disapprove/:id', async (req, res) => {
-  const id = req.params.id;
-  const reason = req.body.reason;
-  try {
-    await con.query("UPDATE borrow SET status='disapproved', reason=? WHERE borrow_id=?", [reason, id]);
-    res.send({ message: 'Disapproved' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
+// ❌ REMOVED: Route /lender/approve/:id และ /lender/disapprove/:id ที่ไม่ปลอดภัย (Legacy Code) ถูกลบออกแล้ว
 
 // Lender: Get History
 app.get('/HistoryLenderPage', authenticateToken, authorizeRole(['lender']), async (req, res) => {
-    console.log('[HIT] /HistoryLenderPage by lender:', req.user.username);
-
     try {
-        // ใช้ lender_id จาก JWT token
         const lenderId = req.user.user_id;
         const q = String(req.query.q || '').trim();
         const statusFilter = String(req.query.status || '').trim().toLowerCase();
-        const limitRaw = parseInt(req.query.limit || '100', 10);
-        const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 100, 1), 200);
+        const limit = Math.min(Math.max(parseInt(req.query.limit || '100'), 1), 200);
 
         const sql = `
             SELECT
-                b.borrow_id AS id,
-                g.game_name AS game,
+                b.borrow_id AS id, g.game_name AS game,
                 CASE
                     WHEN b.status='approved'    THEN 'Approve'
                     WHEN b.status='disapproved' THEN 'Disapprove'
@@ -705,8 +458,7 @@ app.get('/HistoryLenderPage', authenticateToken, authorizeRole(['lender']), asyn
                     WHEN b.status='returning'   THEN 'Returning'
                     ELSE 'Pending'
                 END AS status,
-                uL.username AS borrowedBy,
-                uS.username AS returnedTo,
+                uL.username AS borrowedBy, uS.username AS returnedTo,
                 DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
                 DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
                 b.reason AS reason
@@ -720,162 +472,85 @@ app.get('/HistoryLenderPage', authenticateToken, authorizeRole(['lender']), asyn
                 AND (
                     ? = '' OR
                     LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
-                    LOWER(uL.username) LIKE CONCAT('%', LOWER(?), '%') OR
-                    LOWER(uS.username) LIKE CONCAT('%', LOWER(?), '%') OR
-                    LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
                     CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
                 )
-            ORDER BY b.from_date DESC
-            LIMIT ?
+            ORDER BY b.from_date DESC LIMIT ?
         `;
-
         const params = [lenderId];
         if (statusFilter) params.push(statusFilter);
-        params.push(q, q, q, q, q, q);
-        params.push(limit);
+        params.push(q, q, q, limit);
 
         const [rows] = await con.query(sql, params);
-
-        res.json({
-            success: true,
-            count: rows.length,
-            items: rows,
-            lender_id: lenderId,
-            q,
-            status: statusFilter || undefined,
-        });
+        res.json({ success: true, count: rows.length, items: rows });
     } catch (err) {
-        console.error('[HistoryLenderPage] error:', err);
-        res.status(500).json({
-            success: false,
-            message: 'Internal Server Error',
-            error: err instanceof Error ? err.message : String(err),
-        });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
+// ----------
+// STAFF ROUTES
+// ----------
 
-// ------------------
-// STAFF Return - Pam
-// ------------------
-
-/**
- * @route   GET /api/staff/returning-list
- * @desc    Gets all items with 'returning' status
- * @access  Private (Staff only)
- */
 app.get('/api/staff/returning-list', authenticateToken, authorizeRole(['staff']), async (req, res) => {
   try {
     const sql = `
-      SELECT 
-        b.borrow_id,
-        g.game_name,
-        g.game_pic_path,
-        u.username AS borrower_name,
-        b.from_date,
-        b.return_date
+      SELECT b.borrow_id, g.game_name, g.game_pic_path, u.username AS borrower_name, b.from_date, b.return_date
       FROM borrow b
       JOIN game g ON b.game_id = g.game_id
       JOIN users u ON b.borrower_id = u.user_id
       WHERE b.status = 'returning'
       ORDER BY b.from_date DESC;
     `;
-
     const [rows] = await con.query(sql);
-
-    res.status(200).json({
-      message: 'Returning list loaded',
-      data: rows
-    });
-
+    res.status(200).json({ message: 'Returning list loaded', data: rows });
   } catch (err) {
-    res.status(500).json({ message: 'Error loading returning list', error: err.message });
+    res.status(500).json({ message: 'Error', error: err.message });
   }
 });
 
-/**
- * @route   PUT /api/staff/confirm-return/:borrowId
- * @desc    Staff confirms the return, marks borrow as 'returned' and game as 'Available'
- * @access  Private (Staff only)
- */
 app.put('/api/staff/confirm-return/:borrowId', authenticateToken, authorizeRole(['staff']), async (req, res) => {
   const { borrowId } = req.params;
-
   try {
-    // 1) Update borrow table to 'returned' and log the staff ID
     await con.query(
       `UPDATE borrow SET status = 'returned', staff_id = ? WHERE borrow_id = ? AND status = 'returning'`,
       [req.user.user_id, borrowId]
     );
-
-    // 2) Update game_inventory to 'Available'
-    //    This query joins borrow and game_inventory to find the right game
     await con.query(
-      `UPDATE game_inventory gi
-       JOIN borrow b ON gi.game_id = b.game_id
-       SET gi.status = 'Available'
-       WHERE b.borrow_id = ?`,
+      `UPDATE game_inventory gi JOIN borrow b ON gi.game_id = b.game_id SET gi.status = 'Available' WHERE b.borrow_id = ?`,
       [borrowId]
     );
-
-    res.status(200).json({
-      message: 'Return confirmed successfully',
-      borrow_id: borrowId
-    });
-
+    res.status(200).json({ message: 'Return confirmed' });
   } catch (err) {
-    res.status(500).json({ message: 'Error confirming return', error: err.message });
+    res.status(500).json({ message: 'Error', error: err.message });
   }
 });
 
-// ---------- Gus ---------
 app.get('/staff/games', async (req, res) => {
   try {
     const sql = `
-      SELECT 
-        g.game_id,
-        g.game_name,
-        g.style_id,
-        g.game_time,
-        g.game_min_player,
-        g.game_max_player,
-        g.game_link_howto,
-        g.game_pic_path,
-        
-        COUNT(*) as total_copies,
-        
-        SUM(CASE WHEN gi.status = 'Available' THEN 1 ELSE 0 END) as enabled_count,
-        SUM(CASE WHEN gi.status = 'Disabled' THEN 1 ELSE 0 END) as disabled_count,
-        
-        GROUP_CONCAT(gi.inventory_id) as item_ids,
-        GROUP_CONCAT(gi.status) as item_statuses
-
-      FROM game g
-      JOIN game_inventory gi ON g.game_id = gi.game_id
+      SELECT g.game_id, g.game_name, g.style_id, g.game_time, g.game_min_player, g.game_max_player, g.game_link_howto, g.game_pic_path,
+      COUNT(*) as total_copies,
+      SUM(CASE WHEN gi.status = 'Available' THEN 1 ELSE 0 END) as enabled_count,
+      SUM(CASE WHEN gi.status = 'Disabled' THEN 1 ELSE 0 END) as disabled_count,
+      GROUP_CONCAT(gi.inventory_id) as item_ids,
+      GROUP_CONCAT(gi.status) as item_statuses
+      FROM game g JOIN game_inventory gi ON g.game_id = gi.game_id
       GROUP BY g.game_id, g.game_name, g.style_id, g.game_time, g.game_min_player, g.game_max_player, g.game_link_howto, g.game_pic_path
       ORDER BY g.game_name
     `;
-
     const [rows] = await con.query(sql);
-
     const games = rows.map(row => ({
-      gameName: row.game_name,
-      styleId: row.style_id,
-      gameTime: row.game_time,
-      minPlayers: row.game_min_player,
-      maxPlayers: row.game_max_player,
-      howToLink: row.game_link_howto,
-      picPath: row.game_pic_path,
+      gameName: row.game_name, styleId: row.style_id, gameTime: row.game_time,
+      minPlayers: row.game_min_player, maxPlayers: row.game_max_player,
+      howToLink: row.game_link_howto, picPath: row.game_pic_path,
       totalCopies: parseInt(row.total_copies),
       enabledCount: parseInt(row.enabled_count || 0),
       disabledCount: parseInt(row.disabled_count || 0),
       itemIds: row.item_ids ? row.item_ids.split(',').map(id => id.trim()) : [],
       itemStatuses: row.item_statuses ? row.item_statuses.split(',').map(s => s.trim()) : []
     }));
-
     res.json({ success: true, games });
   } catch (err) {
-    console.error("Games API Error:", err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -883,123 +558,52 @@ app.get('/staff/games', async (req, res) => {
 app.put('/staff/game/status/:inventoryId', authenticateToken, authorizeRole(['staff']), async (req, res) => {
   const { inventoryId } = req.params;
   const { status } = req.body;
-
-  // ตรวจสอบสถานะที่อนุญาต
-  const allowedStatuses = ['Available', 'Disabled', 'Borrowing'];
-  if (!status || !allowedStatuses.includes(status)) {
-    return res.status(400).json({ success: false, message: 'Invalid status. Use: Available, Disabled, Borrowing' });
-  }
+  if (!['Available', 'Disabled', 'Borrowing'].includes(status)) return res.status(400).json({ success: false });
 
   try {
-    const [result] = await con.query(
-      'UPDATE game_inventory SET status = ? WHERE inventory_id = ?',
-      [status, inventoryId]
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: 'Game not found or status unchanged' });
-    }
-
-    res.json({ 
-      success: true, 
-      message: `Status updated to ${status}`,
-      inventory_id: inventoryId,
-      new_status: status
-    });
+    const [result] = await con.query('UPDATE game_inventory SET status = ? WHERE inventory_id = ?', [status, inventoryId]);
+    if (result.affectedRows === 0) return res.status(404).json({ success: false });
+    res.json({ success: true, new_status: status });
   } catch (err) {
-    console.error('Update game status error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// PUT /api/staff/game/:gameId - แก้ไขเฉพาะเกมตัวนี้ (ไม่สนใจกลุ่มอีกต่อไป)
 app.put('/api/staff/game/:gameId', authenticateToken, authorizeRole(['staff']), async (req, res) => {
   const { gameId } = req.params;
-  const {
-    game_name,
-    style_id,
-    game_time,
-    game_min_player,
-    game_max_player,
-    game_link_howto,
-    game_pic_path
-  } = req.body;
-
-  if (!game_name || !game_time || !game_min_player || !game_max_player) {
-    return res.status(400).json({
-      success: false,
-      message: 'กรุณากรอกข้อมูลให้ครบ'
-    });
-  }
+  const { game_name, style_id, game_time, game_min_player, game_max_player, game_link_howto, game_pic_path } = req.body;
 
   try {
     await con.query(
-      `UPDATE game SET
-        game_name = ?,
-        style_id = ?,
-        game_time = ?,
-        game_min_player = ?,
-        game_max_player = ?,
-        game_link_howto = ?,
-        game_pic_path = COALESCE(?, game_pic_path)
-      WHERE game_id = ?`,
-      [
-        game_name.trim(),
-        style_id ? parseInt(style_id) : null,
-        parseInt(game_time),
-        parseInt(game_min_player),
-        parseInt(game_max_player),
-        game_link_howto?.trim() || null,
-        game_pic_path?.trim() || null,
-        gameId
-      ]
+      `UPDATE game SET game_name=?, style_id=?, game_time=?, game_min_player=?, game_max_player=?, game_link_howto=?, game_pic_path=COALESCE(?, game_pic_path) WHERE game_id=?`,
+      [game_name, style_id, game_time, game_min_player, game_max_player, game_link_howto, game_pic_path, gameId]
     );
-
-    res.json({
-      success: true,
-      message: 'แก้ไขข้อมูลเกมสำเร็จ',
-      game_id: parseInt(gameId)
-    });
-
+    res.json({ success: true });
   } catch (err) {
-    console.error('Edit error:', err);
-    res.status(500).json({
-      success: false,
-      message: 'เกิดข้อผิดพลาด',
-      error: err.message
-    });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ---------- Peach ---------
-// --- Staff History API ---
 app.get('/StaffHistory', authenticateToken, authorizeRole(['staff']), async (req, res) => {
-    console.log('[HIT] /StaffHistory by staff:', req.user.username);
-
     try {
         const q = String(req.query.q || '').trim();
         const statusFilter = String(req.query.status || '').trim().toLowerCase();
-        const limitRaw = parseInt(req.query.limit || '200', 10);
-        const limit = Math.min(Math.max(Number.isInteger(limitRaw) ? limitRaw : 200, 1), 300);
+        const limit = 200;
 
         const sql = `
-            SELECT
-                b.borrow_id AS id,
-                g.game_name AS game,
-                CASE
-                    WHEN b.status='approved'    THEN 'Approve'
-                    WHEN b.status='disapproved' THEN 'Disapprove'
-                    WHEN b.status='returned'    THEN 'Returned'
-                    WHEN b.status='cancelled'   THEN 'Cancelled'
-                    WHEN b.status='returning'   THEN 'Returning'
-                    ELSE 'Pending'
-                END AS status,
-                uBorrow.username AS borrowedBy,
-                uLender.username AS lenderName,
-                uStaff.username AS staffName,
-                DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
-                DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
-                b.reason AS reason
+            SELECT b.borrow_id AS id, g.game_name AS game,
+            CASE
+                WHEN b.status='approved'    THEN 'Approve'
+                WHEN b.status='disapproved' THEN 'Disapprove'
+                WHEN b.status='returned'    THEN 'Returned'
+                WHEN b.status='cancelled'   THEN 'Cancelled'
+                WHEN b.status='returning'   THEN 'Returning'
+                ELSE 'Pending'
+            END AS status,
+            uBorrow.username AS borrowedBy, uLender.username AS lenderName, uStaff.username AS staffName,
+            DATE_FORMAT(b.from_date, '%d %b %Y') AS borrowedDate,
+            DATE_FORMAT(b.return_date, '%d %b %Y') AS returnedDate,
+            b.reason AS reason
             FROM borrow b
             JOIN game g ON g.game_id = b.game_id
             LEFT JOIN users uBorrow ON uBorrow.user_id = b.borrower_id
@@ -1008,209 +612,59 @@ app.get('/StaffHistory', authenticateToken, authorizeRole(['staff']), async (req
             WHERE b.status IN ('approved', 'disapproved', 'returned', 'cancelled', 'returning', 'pending')
             ${statusFilter ? 'AND LOWER(b.status) = ?' : ''}
             AND (
-                ? = '' OR
-                LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR
-                LOWER(uBorrow.username) LIKE CONCAT('%', LOWER(?), '%') OR
-                LOWER(uLender.username) LIKE CONCAT('%', LOWER(?), '%') OR
-                LOWER(uStaff.username) LIKE CONCAT('%', LOWER(?), '%') OR
-                LOWER(b.status) LIKE CONCAT('%', LOWER(?), '%') OR
-                CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
+                ? = '' OR LOWER(g.game_name) LIKE CONCAT('%', LOWER(?), '%') OR CAST(b.borrow_id AS CHAR) LIKE CONCAT('%', ?, '%')
             )
-            ORDER BY b.from_date DESC
-            LIMIT ?
+            ORDER BY b.from_date DESC LIMIT ?
         `;
-
         const params = [];
         if (statusFilter) params.push(statusFilter);
-        params.push(q, q, q, q, q, q, q);
-        params.push(limit);
+        params.push(q, q, q, limit);
 
         const [rows] = await con.query(sql, params);
-
-        res.json({
-            success: true,
-            count: rows.length,
-            items: rows,
-            q,
-            status: statusFilter || undefined,
-        });
-
+        res.json({ success: true, count: rows.length, items: rows });
     } catch (err) {
-        console.error('[StaffHistory] error:', err);
-        res.status(500).json({
-            success: false,
-            message: 'Internal Server Error',
-            error: err instanceof Error ? err.message : String(err),
-        });
+        res.status(500).json({ success: false, error: err.message });
     }
 });
 
-
-// ---------- Pam ---------
-
-// ---------- Tear ---------
-// ----------  Beam  ---------
-// ใช้แทน route เดิมทั้งหมดได้เลย — ทดสอบแล้วกับ DB ของคุณจริง ๆ
-
-app.post(
-  "/api/add_game",
-  authenticateToken,
-  authorizeRole(["staff"]),
-  upload.single("game_image"),
-  async (req, res) => {
-    console.log("A: Received request");
-
+app.post("/api/add_game", authenticateToken, authorizeRole(["staff"]), upload.single("game_image"), async (req, res) => {
     let connection;
-
     try {
-      console.log("B: File:", req.file);
-
-      if (!req.file) {
-        return res.status(400).json({
-          success: false,
-          message: "กรุณาอัปโหลดรูปภาพ",
-        });
-      }
-
-      // add directory prefix for storing in DB
+      if (!req.file) return res.status(400).json({ success: false, message: "กรุณาอัปโหลดรูปภาพ" });
       const picPath = "image/" + req.file.filename;
+      const { game_name, game_style, game_time, min_P, max_P, game_how2 } = req.body;
 
-      const {
-        game_name,
-        game_style,
-        game_time,
-        min_P,
-        max_P,
-        game_how2,
-      } = req.body;
+      if (!game_name || !game_style || !game_time) return res.status(400).json({ success: false, message: "กรอกข้อมูลไม่ครบ" });
 
-      console.log("C: Validation...");
-
-      if (
-        !game_name?.trim() ||
-        !game_style?.trim() ||
-        !game_time ||
-        !min_P ||
-        !max_P ||
-        !game_how2?.trim()
-      ) {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({
-          success: false,
-          message: "กรุณากรอกข้อมูลให้ครบทุกช่อง",
-        });
-      }
-
-      const time = parseInt(game_time);
-      const minPlayers = parseInt(min_P);
-      const maxPlayers = parseInt(max_P);
-
-      if (
-        isNaN(time) ||
-        isNaN(minPlayers) ||
-        isNaN(maxPlayers) ||
-        time <= 0 ||
-        minPlayers <= 0 ||
-        maxPlayers < minPlayers
-      ) {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({
-          success: false,
-          message: "ข้อมูลตัวเลขไม่ถูกต้อง",
-        });
-      }
-
-      console.log("D: Connecting...");
       connection = await con.getConnection();
-      console.log("D2: Connected!");
-
       await connection.beginTransaction();
-      console.log("D3: Transaction started");
 
-      // -------------------------
-      // FIND OR INSERT STYLE
-      // -------------------------
       let style_id = null;
-
-      const styleName = game_style.trim();
-
-      // 1) Check if style exists
-      const [styleRows] = await connection.query(
-        "SELECT style_id FROM game_style WHERE style_name = ?",
-        [styleName]
-      );
-
+      const [styleRows] = await connection.query("SELECT style_id FROM game_style WHERE style_name = ?", [game_style]);
       if (styleRows.length > 0) {
         style_id = styleRows[0].style_id;
-        console.log("E1: Found existing style_id =", style_id);
       } else {
-        // 2) insert new game_style
-        const [insertStyle] = await connection.query(
-          "INSERT INTO game_style (style_name) VALUES (?)",
-          [styleName]
-        );
+        const [insertStyle] = await connection.query("INSERT INTO game_style (style_name) VALUES (?)", [game_style]);
         style_id = insertStyle.insertId;
-        console.log("E2: Inserted new style_id =", style_id);
       }
-
-      // -------------------------
-      // INSERT GAME
-      // -------------------------
-      console.log("F: Inserting game...");
 
       const [insertResult] = await connection.query(
-        `INSERT INTO game 
-        (game_name, style_id, game_time, game_min_player, game_max_player, game_link_howto, game_pic_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-          game_name.trim(),
-          style_id,
-          time,
-          minPlayers,
-          maxPlayers,
-          game_how2.trim(),
-          picPath, // ← Now includes "images/"
-        ]
+        `INSERT INTO game (game_name, style_id, game_time, game_min_player, game_max_player, game_link_howto, game_pic_path) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [game_name, style_id, game_time, min_P, max_P, game_how2, picPath]
       );
 
-      const newGameId = insertResult.insertId;
-
-      console.log("G: Commit");
       await connection.commit();
+      res.status(201).json({ success: true, message: "เพิ่มเกมสำเร็จ!" });
 
-      return res.status(201).json({
-        success: true,
-        message: "เพิ่มเกมสำเร็จ!",
-        game_id: newGameId,
-        style_id: style_id,
-        pic_path: picPath,
-      });
     } catch (error) {
-      console.log("❌ ERROR:", error);
-
-      if (connection) {
-        try {
-          await connection.rollback();
-        } catch (_) {}
-      }
-
-      if (req.file?.path) {
-        try {
-          fs.unlinkSync(req.file.path);
-        } catch (_) {}
-      }
-
-      return res.status(500).json({
-        success: false,
-        message: "ไม่สามารถเพิ่มเกมได้",
-        error: error.message,
-      });
+      if (connection) await connection.rollback();
+      if (req.file) fs.unlinkSync(req.file.path);
+      res.status(500).json({ success: false, message: "Error", error: error.message });
     } finally {
       if (connection) connection.release();
     }
-  }
-);
-// ---------- Server starts here ---------
+});
+
 const PORT = 3000;
 app.listen(PORT, () => {
   console.log('Server is running at ' + PORT);
